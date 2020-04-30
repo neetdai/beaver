@@ -1,0 +1,8 @@
+[server]
+ip = "127.0.0.1"
+port = 8090
+version = "0.1"
+server_id = "asdfasdf"
+auth_required = false
+ssl_required = false
+max_payload = 512
