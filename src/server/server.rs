@@ -1,6 +1,6 @@
 use super::channel_message::ChannelMessage;
 use super::consumer::Consumer;
-use super::read_stream::ReadStream;
+use super::productor::Productor;
 use crate::config::{Config, ServerConfig};
 use log::{error, info};
 use std::io::Result as IoResult;
@@ -50,14 +50,14 @@ impl<'a> Server<'a> {
                             let uuid: Uuid = Uuid::new_v4();
                             let (read_stream, write_stream): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) = split(socket);
 
-                            let read_stream: ReadStream = ReadStream::new(read_stream, sender.clone(), uuid, self.add, addr);
+                            let product: Productor = Productor::new(read_stream, sender.clone(), uuid, self.add, addr);
 
                             if let Err(e) = consumer.add(uuid, write_stream, self.add, addr).await {
                                 error!("{:?}", e);
                             };
 
                             spawn(async move {
-                                read_stream.run().await;
+                                product.run().await;
                             });
                         },
                         Err(e) => {
