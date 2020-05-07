@@ -59,60 +59,65 @@ impl Productor {
 
                 Ok(size) => {
                     self.decode.set_buff(&buf[0..size]);
-                    match self.decode.decode() {
-                        Ok(poll) => {
-                            match poll {
-                                Poll::Ready(message) => {
-                                    debug!(
-                                        "{} ----------------> {} send message :{:?}",
-                                        self.remote_addr, self.local_addr, message
-                                    );
-                                    // if let Err(e) = self
-                                    //     .sender
-                                    //     .send(ChannelMessage::Message(self.uuid, message))
-                                    // {
-                                    //     info!("{:?}", e);
-                                    // }
-                                    match message {
-                                        Message::Connect(ref connect_info) => {
-                                            self.stream.set_ssl(
-                                                connect_info
-                                                    .get("ssl_required")
+
+                    loop {
+                        match self.decode.decode() {
+                            Ok(poll) => {
+                                match poll {
+                                    Poll::Ready(message) => {
+                                        debug!(
+                                            "{} ----------------> {} send message :{:?}",
+                                            self.remote_addr, self.local_addr, message
+                                        );
+                                        // if let Err(e) = self
+                                        //     .sender
+                                        //     .send(ChannelMessage::Message(self.uuid, message))
+                                        // {
+                                        //     info!("{:?}", e);
+                                        // }
+                                        match message {
+                                            Message::Connect(ref connect_info) => {
+                                                self.stream.set_ssl(
+                                                    connect_info
+                                                        .get("ssl_required")
+                                                        .and_then(|value| value.as_bool())
+                                                        .map_or(false, |value| value),
+                                                );
+
+                                                self.auth_require = connect_info
+                                                    .get("auth_required")
                                                     .and_then(|value| value.as_bool())
-                                                    .map_or(false, |value| value),
-                                            );
+                                                    .map_or(false, |value| value);
 
-                                            self.auth_require = connect_info
-                                                .get("auth_required")
-                                                .and_then(|value| value.as_bool())
-                                                .map_or(false, |value| value);
-
-                                            if let Err(e) = self.sender.try_send(
-                                                ChannelMessage::Message(self.uuid, message),
-                                            ) {
-                                                info!("{:?}", e);
-                                            } else {
-                                                debug!("send success");
+                                                if let Err(e) = self.sender.try_send(
+                                                    ChannelMessage::Message(self.uuid, message),
+                                                ) {
+                                                    info!("{:?}", e);
+                                                } else {
+                                                    debug!("send success");
+                                                }
                                             }
-                                        }
-                                        _ => {
-                                            if let Err(e) = self.sender.try_send(
-                                                ChannelMessage::Message(self.uuid, message),
-                                            ) {
-                                                info!("{:?}", e);
-                                            } else {
-                                                debug!("send success");
+                                            _ => {
+                                                if let Err(e) = self.sender.try_send(
+                                                    ChannelMessage::Message(self.uuid, message),
+                                                ) {
+                                                    info!("{:?}", e);
+                                                } else {
+                                                    debug!("send success");
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                Poll::Pending => {
-                                    yield_now().await;
+                                    Poll::Pending => {
+                                        // yield_now().await;
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            info!("{}", e);
+                            Err(e) => {
+                                info!("{}", e);
+                                break;
+                            }
                         }
                     }
                 }
