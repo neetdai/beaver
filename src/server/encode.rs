@@ -1,6 +1,7 @@
 use serde_derive::Serialize;
-use serde_json::{error::Result, from_str};
+use serde_json::{error::Result};
 use std::default::Default;
+use std::net::IpAddr;
 
 // const PING: &str = "PING\r\n";
 // const PONG: &str = "PONG\r\n";
@@ -9,12 +10,18 @@ use std::default::Default;
 #[derive(Debug, Serialize)]
 pub(super) struct Info {
     server_id: String,
+    server_name: String,
     version: String,
     host: String,
     port: u16,
     auth_required: bool,
     ssl_required: bool,
     max_payload: usize,
+    proto: usize,
+    client_id: usize,
+    client_ip: String,
+    git_commit: String,
+    go: String,
 }
 
 impl Info {
@@ -24,6 +31,11 @@ impl Info {
 
     pub(super) fn set_server_id(mut self, server_id: String) -> Self {
         self.server_id = server_id;
+        self
+    }
+
+    pub(super) fn set_server_name(mut self, server_name: String) -> Self {
+        self.server_name = server_name;
         self
     }
 
@@ -57,12 +69,23 @@ impl Info {
         self
     }
 
-    pub(super) fn format(&self) -> Result<String> {
-        #[cfg(target = "windows")]
-        return Ok(format!("INFO {}\r\n", serde_json::to_string(self)?));
+    pub(super) fn set_proto(mut self, proto: usize) -> Self {
+        self.proto = proto;
+        self
+    }
 
-        #[cfg(not(target = "windows"))]
-        return Ok(format!("INFO {}\n", serde_json::to_string(self)?));
+    pub(super) fn set_client_id(mut self, client_id: usize) -> Self {
+        self.client_id = client_id;
+        self
+    }
+
+    pub(super) fn set_client_ip(mut self, client_ip: IpAddr) -> Self {
+        self.client_ip = client_ip.to_string();
+        self
+    }
+
+    pub(super) fn format(&self) -> Result<String> {
+        return Ok(format!("INFO {}\r\n", serde_json::to_string(self)?));
     }
 }
 
@@ -70,12 +93,18 @@ impl Default for Info {
     fn default() -> Self {
         Self {
             server_id: String::new(),
+            server_name: String::new(),
             version: String::new(),
             host: "127.0.0.1".to_string(),
             port: 8090,
             auth_required: false,
             ssl_required: false,
             max_payload: 512,
+            proto: 1,
+            client_id: 0,
+            client_ip: "127.0.0.1".to_string(),
+            git_commit: "8c8d6f".to_string(),
+            go: "go1.13".to_string(),
         }
     }
 }
@@ -85,11 +114,7 @@ pub(super) struct Ping;
 
 impl Ping {
     pub(super) const fn format() -> &'static str {
-        #[cfg(target = "windows")]
         return "PING\r\n";
-
-        #[cfg(not(target = "windows"))]
-        return "PING\n";
     }
 }
 
@@ -98,11 +123,7 @@ pub(super) struct Pong;
 
 impl Pong {
     pub(super) const fn format() -> &'static str {
-        #[cfg(target = "windows")]
         return "PONG\r\n";
-
-        #[cfg(not(target = "windows"))]
-        "PONG\n"
     }
 }
 
@@ -111,10 +132,6 @@ pub(super) struct ResponseOk;
 
 impl ResponseOk {
     pub(super) const fn format() -> &'static str {
-        #[cfg(target = "windows")]
         return "+OK\r\n";
-
-        #[cfg(not(target = "windows"))]
-        return "+OK\n";
     }
 }

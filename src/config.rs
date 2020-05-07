@@ -16,6 +16,7 @@ pub enum Error {
 #[derive(Deserialize, Debug, Clone)]
 pub struct ServerConfig {
     server_id: String,
+    server_name: String,
     ip: String,
     port: u16,
     version: String,
@@ -25,6 +26,7 @@ pub struct ServerConfig {
     read_timeout: Option<u64>,
     write_timeout: Option<u64>,
     connect_timeout: Option<u64>,
+    proto: usize,
 }
 
 impl ServerConfig {
@@ -38,6 +40,10 @@ impl ServerConfig {
 
     pub fn get_server_id(&self) -> &String {
         &self.server_id
+    }
+
+    pub fn get_server_name(&self) -> &String {
+        &self.server_name
     }
 
     pub fn get_version(&self) -> &String {
@@ -54,6 +60,10 @@ impl ServerConfig {
 
     pub fn get_max_payload(&self) -> usize {
         self.max_payload
+    }
+
+    pub fn get_proto(&self) -> usize {
+        self.proto
     }
 }
 

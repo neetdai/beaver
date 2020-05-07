@@ -54,6 +54,7 @@ impl<'a> Consumer<'a> {
         stream: WriteHalf<TcpStream>,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
+        client_id: usize,
     ) -> Result<(), ConsumerError> {
         let server_config = self.config.get_server();
 
@@ -61,10 +62,14 @@ impl<'a> Consumer<'a> {
             .set_host(server_config.get_ip().clone())
             .set_port(server_config.get_port())
             .set_server_id(server_config.get_server_id().clone())
+            .set_server_name(server_config.get_server_name().clone())
             .set_version(server_config.get_version().clone())
             .set_auth_required(server_config.get_auth_required())
             .set_ssl_required(server_config.get_ssl_required())
-            .set_max_payload(server_config.get_max_payload());
+            .set_max_payload(server_config.get_max_payload())
+            .set_proto(server_config.get_proto())
+            .set_client_id(client_id)
+            .set_client_ip(remote_addr.ip());
 
         let mut write_stream: WriteStream = WriteStream::new(stream, local_addr, remote_addr);
 
@@ -111,11 +116,19 @@ impl<'a> Consumer<'a> {
                                 if let Err(e) = self.send_ping(&uuid).await {
                                     error!("{:?}", e);
                                 }
+
+                                // if let Err(e) = self.send_pong(&uuid).await {
+                                //     error!("{:?}", e);
+                                // }
                             }
                             Message::Ping => {
                                 if let Err(e) = self.send_pong(&uuid).await {
                                     error!("{:?}", e);
                                 }
+
+                                // if let Err(e) = self.send_ping(&uuid).await {
+                                //     error!("{:?}", e);
+                                // }
                             }
                         },
                     }
