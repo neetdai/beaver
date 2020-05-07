@@ -59,6 +59,9 @@ impl<'a> Server<'a> {
                                 error!("{:?}", e);
                             };
 
+                            // 客户端id + 1
+                            client_id += 1;
+
                             spawn(async move {
                                 product.run().await;
                             });
