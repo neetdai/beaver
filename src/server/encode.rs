@@ -3,9 +3,9 @@ use serde_json::{error::Result};
 use std::default::Default;
 use std::net::IpAddr;
 
-// const PING: &str = "PING\r\n";
-// const PONG: &str = "PONG\r\n";
-// const OK: &str = "+OK\r\n";
+const PING: &str = "PING\r\n";
+const PONG: &str = "PONG\r\n";
+const OK: &str = "+OK\r\n";
 
 #[derive(Debug, Serialize)]
 pub(super) struct Info {
@@ -114,7 +114,7 @@ pub(super) struct Ping;
 
 impl Ping {
     pub(super) const fn format() -> &'static str {
-        return "PING\r\n";
+        PING
     }
 }
 
@@ -123,7 +123,7 @@ pub(super) struct Pong;
 
 impl Pong {
     pub(super) const fn format() -> &'static str {
-        return "PONG\r\n";
+        PONG
     }
 }
 
@@ -132,6 +132,6 @@ pub(super) struct ResponseOk;
 
 impl ResponseOk {
     pub(super) const fn format() -> &'static str {
-        return "+OK\r\n";
+        OK
     }
 }
