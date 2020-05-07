@@ -42,6 +42,9 @@ impl<'a> Server<'a> {
         let mut consumer: Consumer = Consumer::new(self.config);
         consumer.set_recevier(receiver);
 
+        // 生成链接的client_id
+        let mut client_id: usize = 0;
+
         loop {
             select! {
                 result = listener.accept() => {
@@ -52,7 +55,7 @@ impl<'a> Server<'a> {
 
                             let product: Productor = Productor::new(read_stream, sender.clone(), uuid, self.add, addr);
 
-                            if let Err(e) = consumer.add(uuid, write_stream, self.add, addr).await {
+                            if let Err(e) = consumer.add(uuid, write_stream, self.add, addr, client_id).await {
                                 error!("{:?}", e);
                             };
 
