@@ -1,5 +1,5 @@
 use serde_derive::Serialize;
-use serde_json::{error::Result};
+use serde_json::error::Result;
 use std::default::Default;
 use std::net::IpAddr;
 

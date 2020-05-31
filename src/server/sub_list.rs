@@ -87,24 +87,19 @@ impl<'a, T> Entry<'a, T> {
     }
 
     fn search_mut_entry(&mut self, key: &'a str) -> Option<&mut Self> {
-        self.next_level.search(|(k, _)| {
-            k == &key
-        })
-        .map(|(_, entry)| {
-            &mut *entry
-        })
+        self.next_level
+            .search(|(k, _)| k == &key)
+            .map(|(_, entry)| &mut *entry)
     }
 
     fn subscribe(&mut self, list: &mut Vec<&'a str>) -> Receiver<T> {
         if list.is_empty() {
             self.sender.subscribe()
         } else {
-            let key: & 'a str = list.remove(0);
+            let key: &'a str = list.remove(0);
 
             match self.search_mut_entry(&key) {
-                Some(entry) => {
-                    entry.subscribe(list)
-                },
+                Some(entry) => entry.subscribe(list),
                 None => {
                     let mut entry: Entry<T> = Self::new();
                     let recv: Receiver<T> = entry.subscribe(list);
@@ -115,7 +110,10 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
-    fn send(&mut self, list:&mut Vec<&'a str>, value: T) where T: Clone {
+    fn send(&mut self, list: &mut Vec<&'a str>, value: T)
+    where
+        T: Clone,
+    {
         if list.is_empty() {
             self.sender.send(value);
         } else {
@@ -129,13 +127,11 @@ impl<'a, T> Entry<'a, T> {
 
     fn remove(&mut self, list: &mut Vec<&'a str>) {
         match list.len() {
-            0 => {},
+            0 => {}
             1 => {
                 let key: &'a str = list.remove(0);
-                self.next_level.remove(|(k, _)| {
-                    k == &key
-                });
-            },
+                self.next_level.remove(|(k, _)| k == &key);
+            }
             _ => {
                 let key: &'a str = list.remove(0);
                 if let Some(entry) = self.search_mut_entry(&key) {
@@ -167,7 +163,6 @@ fn sub_entry() {
 
     let mut iter = block_on(recv.recv_iter());
 
-    
     assert_eq!(iter.next(), Some(3));
     assert_eq!(iter.next(), None);
 }
@@ -210,7 +205,7 @@ where
 fn test_trie() {
     use futures::executor::block_on;
     let mut sublist: SubList<usize> = SubList::new();
-    
+
     let recv = sublist.subscribe("hello.world.fuck");
 
     sublist.send("hello.world.fuck", 10);
