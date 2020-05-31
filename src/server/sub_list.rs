@@ -172,6 +172,7 @@ fn sub_entry() {
     assert_eq!(iter.next(), None);
 }
 
+// 用前缀树做的订阅列表
 #[derive(Debug)]
 pub(super) struct SubList<'a, T>
 where
