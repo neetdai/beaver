@@ -18,7 +18,7 @@ serde_json = "*"
 bytes = "*"
 uuid = {version = "0.8.1", features = ["v4"]}
 thiserror = "1.0.13"
-sequence_trie = "*"
+async_spmc = {git = "https://github.com/neetdai/async_spmc", branch = "lock_free"}
 
 
 [dev-dependencies]
