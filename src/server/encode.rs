@@ -85,7 +85,7 @@ impl Info {
     }
 
     pub(super) fn format(&self) -> Result<String> {
-        return Ok(format!("INFO {}\r\n", serde_json::to_string(self)?));
+        Ok(format!("INFO {}\r\n", serde_json::to_string(self)?))
     }
 }
 
