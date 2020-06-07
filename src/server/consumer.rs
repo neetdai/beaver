@@ -1,20 +1,26 @@
 use super::channel_message::ChannelMessage;
 use super::decode::Message;
 use super::encode;
+use super::sub_list::SubList;
 use super::write_stream::WriteStream;
 use crate::config::Config;
+use async_spmc::Receiver as SubListReceiver;
 use futures::future::join_all;
+use futures::future::poll_fn;
 use log::{debug, error, info};
 use serde_json::Error as SerdeJsonError;
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::Error as IoError;
 use std::mem::replace;
 use std::net::SocketAddr;
 use std::ops::Drop;
+use std::pin::Pin;
+use std::task::Poll;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
+use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::Receiver;
 use uuid::Uuid;
@@ -31,21 +37,19 @@ pub(super) enum ConsumerError {
 #[derive(Debug)]
 pub(super) struct Consumer<'a> {
     map: HashMap<Uuid, WriteStream>,
-    recevier: Option<Receiver<ChannelMessage>>,
+    recevier: Receiver<ChannelMessage>,
     config: &'a Config,
+    sid_map: HashMap<String, SubListReceiver<String>>,
 }
 
 impl<'a> Consumer<'a> {
-    pub(super) fn new(config: &'a Config) -> Self {
+    pub(super) fn new(config: &'a Config, recevier: Receiver<ChannelMessage>) -> Self {
         Self {
             map: HashMap::new(),
-            recevier: None,
+            recevier: recevier,
             config,
+            sid_map: HashMap::new(),
         }
-    }
-
-    pub(super) fn set_recevier(&mut self, recevier: Receiver<ChannelMessage>) {
-        self.recevier = Some(recevier);
     }
 
     pub(super) async fn add(
@@ -80,9 +84,10 @@ impl<'a> Consumer<'a> {
     }
 
     pub(super) async fn run(&mut self) {
+        let mut sub_list = SubList::new();
         loop {
-            if let Some(recv) = &mut self.recevier {
-                if let Some(channel_message) = recv.recv().await {
+            // select! {
+                if let Some(channel_message) = self.recevier.recv().await {
                     match channel_message {
                         ChannelMessage::Shutdown(uuid) => {
                             self.map.remove(&uuid);
@@ -110,8 +115,15 @@ impl<'a> Consumer<'a> {
                             }
                             Message::Sub(subject, group, sid) => {
                                 debug!("sid {:?}", sid);
+
+                                // 注册订阅指定的主题
+                                let receiver: SubListReceiver<String> = sub_list.subscribe(subject);
+                                self.sid_map.insert(sid, receiver);
                             }
-                            Message::Pub() => {}
+                            Message::Pub() => {
+
+
+                            }
                             Message::Pong => {
                                 if let Err(e) = self.send_ping(&uuid).await {
                                     error!("{:?}", e);
@@ -133,8 +145,31 @@ impl<'a> Consumer<'a> {
                         },
                     }
                 }
-            }
+                // (sid, sub_message_list) = self.select_sid_receiver() => {
+
+                // }
+            // }
         }
+    }
+
+    // 监听所有已订阅的消息, 返回发布的消息
+    async fn select_sid_receiver(&mut self) -> (String, Vec<String>) {
+        poll_fn(|cx| {
+            debug!("sid receiver check");
+
+            for (key, recv) in self.sid_map.iter_mut() {
+                let mut fut = recv.recv_iter();
+                let fut = unsafe { Pin::new_unchecked(&mut fut) };
+
+                if let Poll::Ready(iter) = fut.poll(cx) {
+                    let list: Vec<String> = iter.collect();
+                    return Poll::Ready((key.to_string(), list));
+                }
+            }
+
+            Poll::Pending
+        })
+        .await
     }
 
     async fn send_ping(&mut self, uuid: &Uuid) -> Result<(), IoError> {

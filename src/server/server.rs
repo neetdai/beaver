@@ -39,8 +39,7 @@ impl<'a> Server<'a> {
         let mut listener = TcpListener::bind(self.add).await?;
         let (sender, receiver) = channel::<ChannelMessage>(CHANNEL_LENGTH);
 
-        let mut consumer: Consumer = Consumer::new(self.config);
-        consumer.set_recevier(receiver);
+        let mut consumer: Consumer = Consumer::new(self.config, receiver);
 
         // 生成链接的client_id
         let mut client_id: usize = 0;
