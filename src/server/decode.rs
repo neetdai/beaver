@@ -3,7 +3,9 @@ use serde;
 use serde_derive::Deserialize;
 use serde_json::{self, Error as SerdeError};
 use std::io::Error as IoError;
+use std::mem::swap;
 use std::str::from_utf8;
+use std::str::FromStr;
 use std::str::Utf8Error;
 use std::task::Poll;
 use thiserror::Error;
@@ -52,6 +54,7 @@ enum State {
     SubSpace,
     SubPrepare,
     PubSpace,
+    PubComplete,
     Ping,
     PingPrepare,
     Pong,
@@ -83,7 +86,7 @@ enum State {
 pub(super) enum Message {
     Connect(serde_json::Value),
     Sub(String, Option<String>, String),
-    Pub(),
+    Pub(String, Option<String>, String),
     Pong,
     Ping,
 }
@@ -224,15 +227,28 @@ impl Decode {
                             self.state = State::SubSpace;
                         }
                     },
+                    State::Pu if item == b'B' => self.state = State::Pub,
                     State::Pub => match item {
-                        b' ' | b'\t' => {
+                        b' ' => {
                             self.state = State::PubSpace;
                         }
                         b'\r' => {}
                         _ => {}
                     },
                     State::PubSpace => match item {
-                        b'\r' => {}
+                        b'\n' => {
+                            self.params.push(item);
+                            self.state = State::PubComplete;
+                        }
+                        _ => {
+                            self.params.push(item);
+                        }
+                    },
+                    State::PubComplete => match item {
+                        b'\n' => {
+                            self.params.push(item);
+                            return self.pub_complete();
+                        }
                         _ => {
                             self.params.push(item);
                         }
@@ -305,6 +321,62 @@ impl Decode {
         self.reset();
         Ok(Poll::Ready(result))
     }
+
+    fn pub_message(&mut self) -> Result<Poll<Message>, Error> {
+        let params: Vec<&str> = {
+            from_utf8(&self.params)
+                .map_err(Error::Utf8)?
+                .trim()
+                .split("\r\n")
+                .collect()
+            };
+
+        match params[..] {
+            [info, content] => {
+                let pub_result: Vec<&str> = info.split_whitespace().collect();
+                match pub_result[..] {
+                    [subject, content_length] => {
+                        let content_length: usize =
+                            usize::from_str(content_length).map_err(|_| Error::Parse)?;
+        
+                        if content_length == content.len() {
+
+                            Ok(Poll::Ready(Message::Pub(
+                                subject.to_string(),
+                                None,
+                                content.to_string(),
+                            )))
+                        } else {
+                            Err(Error::Parse)
+                        }
+                    }
+                    [subject, replay, content_length] => {
+                        let content_length: usize =
+                            usize::from_str(content_length).map_err(|_| Error::Parse)?;
+        
+                        if content_length == content.len() {
+                            Ok(Poll::Ready(Message::Pub(
+                                subject.to_string(),
+                                Some(replay.to_string()),
+                                content.to_string(),
+                            )))
+                        } else {
+                            Err(Error::Parse)
+                        }
+                    }
+                    _ => Err(Error::Parse),
+                }
+            },
+            _ => Err(Error::Parse)
+        }
+        
+    }
+
+    fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
+        let result = self.pub_message();
+        self.reset();
+        result
+    }
 }
 
 #[test]
@@ -370,8 +442,6 @@ fn decode_connect_windows() {
     decode.set_buff(b"CONNECT {\"name\":\"#rustlang\",\"pedantic\":false,\"verbose\":true}\r\n");
 
     let result = decode.decode();
-
-    dbg!(&result);
 
     if let Ok(Poll::Ready(Message::Connect(message))) = result {
         // assert_eq!(message, Connect {
@@ -578,4 +648,53 @@ fn decode_sub_error() {
     decode.set_buff(b"SUB asdfasd asdfasdf sdfds sdfaf\n");
     let result = decode.decode();
     result.unwrap();
+}
+
+#[test]
+fn decode_pub_message() {
+    let mut decode = Decode::new(512);
+    decode.set_buff(b"PUB FOO 11\r\nHello NATS!\r\n");
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
+        assert_eq!(subject, String::from("FOO"));
+        assert_eq!(reply, None);
+        assert_eq!(content, String::from("Hello NATS!"));
+    } else {
+        panic!("message parse error");
+    }
+
+    decode.set_buff(b"PUB FOO sdfsa 11\r\nHello World\r\nPUB F= 12\r\nHello World!\r\n");
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
+        assert_eq!(subject, String::from("FOO"));
+        assert_eq!(reply, Some(String::from("sdfsa")));
+        assert_eq!(content, String::from("Hello World"));
+    } else {
+        panic!("message parse error");
+    }
+
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
+        assert_eq!(subject, String::from("F="));
+        assert_eq!(reply, None);
+        assert_eq!(content, String::from("Hello World!"));
+    } else {
+        panic!("message parse error");
+    }
+
+    decode.set_buff(b"PUB FOO");
+    decode.set_buff(b" 11\r\nHello NATS!\r\n");
+
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
+        assert_eq!(subject, String::from("FOO"));
+        assert_eq!(reply, None);
+        assert_eq!(content, String::from("Hello NATS!"));
+    } else {
+        panic!("message parse error");
+    }
 }
