@@ -135,3 +135,47 @@ impl ResponseOk {
         OK
     }
 }
+
+#[derive(Debug)]
+pub(super) struct Msg<'a> {
+    subject: &'a str,
+    sid: &'a str,
+    reply_to: Option<&'a str>,
+    content: &'a str,
+}
+
+impl<'a> Msg<'a> {
+    pub(super) fn new(
+        subject: &'a str,
+        sid: &'a str,
+        reply_to: Option<&'a str>,
+        content: &'a str,
+    ) -> Self {
+        Self {
+            subject,
+            sid,
+            reply_to,
+            content,
+        }
+    }
+
+    pub(super) fn format(&self) -> &'static str {
+        match self.reply_to {
+            Some(reply_to) => format!(
+                "MSG {} {} {} {}\r\n{}\r\n",
+                self.subject,
+                self.sid,
+                reply_to,
+                self.content.len(),
+                self.content
+            ),
+            None => format!(
+                "MSG {} {} {}\r\n{}\r\n",
+                self.subject,
+                self.sid,
+                self.content.len(),
+                self.content
+            ),
+        }
+    }
+}
