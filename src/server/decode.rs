@@ -329,7 +329,7 @@ impl Decode {
                 .trim()
                 .split("\r\n")
                 .collect()
-            };
+        };
 
         match params[..] {
             [info, content] => {
@@ -338,9 +338,8 @@ impl Decode {
                     [subject, content_length] => {
                         let content_length: usize =
                             usize::from_str(content_length).map_err(|_| Error::Parse)?;
-        
-                        if content_length == content.len() {
 
+                        if content_length == content.len() {
                             Ok(Poll::Ready(Message::Pub(
                                 subject.to_string(),
                                 None,
@@ -353,7 +352,7 @@ impl Decode {
                     [subject, replay, content_length] => {
                         let content_length: usize =
                             usize::from_str(content_length).map_err(|_| Error::Parse)?;
-        
+
                         if content_length == content.len() {
                             Ok(Poll::Ready(Message::Pub(
                                 subject.to_string(),
@@ -366,10 +365,9 @@ impl Decode {
                     }
                     _ => Err(Error::Parse),
                 }
-            },
-            _ => Err(Error::Parse)
+            }
+            _ => Err(Error::Parse),
         }
-        
     }
 
     fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
