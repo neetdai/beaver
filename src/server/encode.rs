@@ -159,7 +159,7 @@ impl<'a> Msg<'a> {
         }
     }
 
-    pub(super) fn format(&self) -> &'static str {
+    pub(super) fn format(&self) -> String {
         match self.reply_to {
             Some(reply_to) => format!(
                 "MSG {} {} {} {}\r\n{}\r\n",
