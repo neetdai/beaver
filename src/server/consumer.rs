@@ -39,14 +39,14 @@ pub(super) struct Consumer<'a> {
     map: HashMap<Uuid, WriteStream>,
     recevier: Receiver<ChannelMessage>,
     config: &'a Config,
-    sid_map: HashMap<String, SubListReceiver<String>>,
+    sid_map: HashMap<String, (Uuid, SubListReceiver<String>)>,
 }
 
 impl<'a> Consumer<'a> {
     pub(super) fn new(config: &'a Config, recevier: Receiver<ChannelMessage>) -> Self {
         Self {
             map: HashMap::new(),
-            recevier: recevier,
+            recevier,
             config,
             sid_map: HashMap::new(),
         }
@@ -86,90 +86,120 @@ impl<'a> Consumer<'a> {
     pub(super) async fn run(&mut self) {
         let mut sub_list = SubList::new();
         loop {
-            // select! {
-                if let Some(channel_message) = self.recevier.recv().await {
-                    match channel_message {
-                        ChannelMessage::Shutdown(uuid) => {
-                            self.map.remove(&uuid);
-                        }
-                        ChannelMessage::Message(uuid, message) => match message {
-                            Message::Connect(connect_info) => {
-                                debug!("{:?}", connect_info);
-
-                                if let Some(ssl_require) =
-                                    connect_info.get("ssl_require").and_then(|v| v.as_bool())
-                                {
-                                    self.set_ssl_required(&uuid, ssl_require);
-                                }
-
-                                if let Some(verbose) =
-                                    connect_info.get("verbose").and_then(|v| v.as_bool())
-                                {
-                                    debug!("{:?}", verbose);
-                                    self.set_verbose(&uuid, verbose);
-                                }
-
-                                if let Err(e) = self.send_ok(&uuid).await {
-                                    error!("{:?}", e);
-                                }
-                            }
-                            Message::Sub(subject, group, sid) => {
-                                debug!("sid {:?}", sid);
-
-                                // 注册订阅指定的主题
-                                let receiver: SubListReceiver<String> = sub_list.subscribe(subject);
-                                self.sid_map.insert(sid, receiver);
-                            }
-                            Message::Pub() => {
-
-
-                            }
-                            Message::Pong => {
-                                if let Err(e) = self.send_ping(&uuid).await {
-                                    error!("{:?}", e);
-                                }
-
-                                // if let Err(e) = self.send_pong(&uuid).await {
-                                //     error!("{:?}", e);
-                                // }
-                            }
-                            Message::Ping => {
-                                if let Err(e) = self.send_pong(&uuid).await {
-                                    error!("{:?}", e);
-                                }
-
-                                // if let Err(e) = self.send_ping(&uuid).await {
-                                //     error!("{:?}", e);
-                                // }
-                            }
-                        },
+            if let Some(channel_message) = self.recevier.recv().await {
+                match channel_message {
+                    ChannelMessage::Shutdown(uuid) => {
+                        self.map.remove(&uuid);
                     }
-                }
-                // (sid, sub_message_list) = self.select_sid_receiver() => {
+                    ChannelMessage::Message(uuid, message) => match message {
+                        Message::Connect(connect_info) => {
+                            debug!("{:?}", connect_info);
 
-                // }
-            // }
+                            if let Some(ssl_require) =
+                                connect_info.get("ssl_require").and_then(|v| v.as_bool())
+                            {
+                                self.set_ssl_required(&uuid, ssl_require);
+                            }
+
+                            if let Some(verbose) =
+                                connect_info.get("verbose").and_then(|v| v.as_bool())
+                            {
+                                debug!("{:?}", verbose);
+                                self.set_verbose(&uuid, verbose);
+                            }
+
+                            if let Err(e) = self.send_ok(&uuid).await {
+                                error!("{:?}", e);
+                            }
+                        }
+                        Message::Sub(subject, group, sid) => {
+                            debug!("sid {:?}", sid);
+
+                            // 注册订阅指定的主题
+                            let receiver: SubListReceiver<String> = sub_list.subscribe(subject);
+                            self.sid_map.insert(sid, (uuid, receiver));
+                        }
+                        Message::Pub(subject, reply_to, content) => {
+                            sub_list.send(subject.clone(), content);
+
+                            if let Err(e) = self
+                                .send_all_message_to_receiver(subject.as_str(), &reply_to)
+                                .await
+                            {
+                                error!("{:?}", e);
+                            }
+                        }
+                        Message::Pong => {
+                            if let Err(e) = self.send_ping(&uuid).await {
+                                error!("{:?}", e);
+                            }
+
+                            // if let Err(e) = self.send_pong(&uuid).await {
+                            //     error!("{:?}", e);
+                            // }
+                        }
+                        Message::Ping => {
+                            if let Err(e) = self.send_pong(&uuid).await {
+                                error!("{:?}", e);
+                            }
+
+                            // if let Err(e) = self.send_ping(&uuid).await {
+                            //     error!("{:?}", e);
+                            // }
+                        }
+                    },
+                }
+            }
         }
     }
 
-    // 监听所有已订阅的消息, 返回发布的消息
-    async fn select_sid_receiver(&mut self) -> (String, Vec<String>) {
-        poll_fn(|cx| {
-            debug!("sid receiver check");
-
-            for (key, recv) in self.sid_map.iter_mut() {
+    // 遍历这个sid_map中所有的receiver, 挑选出可以返回的接收者
+    // 这里可以优化, 由于123行中, sub_list.send() 是单生产者多消费者模型
+    // 那么就有可能出现, 只有一个消费者接受到消息, 但是需要遍历整个 sid_map 的情况
+    async fn send_all_message_to_receiver(
+        &mut self,
+        subject: &str,
+        reply_to: &Option<String>,
+    ) -> Result<(), IoError> {
+        let mut list = Vec::new();
+        for (sid, (uuid, ref recv)) in self.sid_map.iter_mut() {
+            let poll_result = poll_fn(|cx| {
                 let mut fut = recv.recv_iter();
                 let fut = unsafe { Pin::new_unchecked(&mut fut) };
 
-                if let Poll::Ready(iter) = fut.poll(cx) {
-                    let list: Vec<String> = iter.collect();
-                    return Poll::Ready((key.to_string(), list));
+                let result = fut.poll(cx);
+
+                match result {
+                    Poll::Ready(try_iter) => Poll::Ready(Some(try_iter)),
+                    Poll::Pending => Poll::Ready(None),
+                }
+            })
+            .await;
+
+            if let Some(try_iter) = poll_result {
+                list.push((sid, uuid, try_iter));
+            }
+        }
+
+        for (sid, uuid, try_iter) in list {
+            if let Some(stream) = self.map.get_mut(uuid) {
+                for message in try_iter {
+                    stream
+                        .write(
+                            encode::Msg::new(
+                                subject,
+                                sid.as_str(),
+                                reply_to.as_ref().map(|reply| reply.as_str()),
+                                message.as_str(),
+                            )
+                            .format()
+                            .as_bytes(),
+                        )
+                        .await?;
                 }
             }
-
-            Poll::Pending
-        })
-        .await
+        }
+        Ok(())
     }
 
     async fn send_ping(&mut self, uuid: &Uuid) -> Result<(), IoError> {
