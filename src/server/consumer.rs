@@ -40,6 +40,7 @@ pub(super) struct Consumer<'a> {
     recevier: Receiver<ChannelMessage>,
     config: &'a Config,
     sid_map: HashMap<String, (Uuid, SubListReceiver<String>)>,
+    sub_list: SubList<String>,
 }
 
 impl<'a> Consumer<'a> {
@@ -49,6 +50,7 @@ impl<'a> Consumer<'a> {
             recevier,
             config,
             sid_map: HashMap::new(),
+            sub_list: SubList::new(),
         }
     }
 
@@ -84,7 +86,6 @@ impl<'a> Consumer<'a> {
     }
 
     pub(super) async fn run(&mut self) {
-        let mut sub_list = SubList::new();
         loop {
             if let Some(channel_message) = self.recevier.recv().await {
                 match channel_message {
@@ -116,16 +117,24 @@ impl<'a> Consumer<'a> {
                             debug!("sid {:?}", sid);
 
                             // 注册订阅指定的主题
-                            let receiver: SubListReceiver<String> = sub_list.subscribe(subject);
+                            let receiver: SubListReceiver<String> = self.sub_list.subscribe(subject);
                             self.sid_map.insert(sid, (uuid, receiver));
+
+                            if let Err(e) = self.send_ok(&uuid).await {
+                                error!("{:?}", e);
+                            }
                         }
                         Message::Pub(subject, reply_to, content) => {
-                            sub_list.send(subject.clone(), content);
+                            self.sub_list.send(subject.clone(), content);
 
                             if let Err(e) = self
                                 .send_all_message_to_receiver(subject.as_str(), &reply_to)
                                 .await
                             {
+                                error!("{:?}", e);
+                            }
+
+                            if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
                             }
                         }
@@ -163,11 +172,14 @@ impl<'a> Consumer<'a> {
     ) -> Result<(), IoError> {
         let mut list = Vec::new();
         for (sid, (uuid, ref recv)) in self.sid_map.iter_mut() {
+            debug!("wait sid {:?}", &sid);
             let poll_result = poll_fn(|cx| {
                 let mut fut = recv.recv_iter();
                 let fut = unsafe { Pin::new_unchecked(&mut fut) };
 
                 let result = fut.poll(cx);
+
+                debug!("poll result {:?}", result.is_ready());
 
                 match result {
                     Poll::Ready(try_iter) => Poll::Ready(Some(try_iter)),
@@ -176,7 +188,9 @@ impl<'a> Consumer<'a> {
             })
             .await;
 
+            // let try_iter = poll_result;
             if let Some(try_iter) = poll_result {
+                debug!("{:?}", &sid);
                 list.push((sid, uuid, try_iter));
             }
         }
