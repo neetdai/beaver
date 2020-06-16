@@ -60,6 +60,7 @@ enum State {
     Pong,
     PongPrepare,
     UnSub,
+    UnSubPrepare,
     Info,
     Connect,
     Msg,
@@ -87,6 +88,7 @@ pub(super) enum Message {
     Connect(serde_json::Value),
     Sub(String, Option<String>, String),
     Pub(String, Option<String>, String),
+    UnSub(String, Option<u32>),
     Pong,
     Ping,
 }
@@ -253,7 +255,22 @@ impl Decode {
                             self.params.push(item);
                         }
                     },
-                    State::UnSub => {}
+                    State::U if item == b'N' => self.state = State::Un,
+                    State::Un if item == b'S' => self.state = State::UnS,
+                    State::UnS if item == b'U' => self.state = State::UnSu,
+                    State::UnSu if item == b'B' => self.state = State::UnSub,
+                    State::UnSub if item == b' ' || item == b'\t' => {
+                        self.state = State::UnSubPrepare
+                    }
+                    State::UnSubPrepare => match item {
+                        b'\n' => {
+                            self.params.push(item);
+                            return self.unsub_complete();
+                        }
+                        _ => {
+                            self.params.push(item);
+                        }
+                    },
                     _ => {
                         self.reset();
                         return Err(Error::Parse);
@@ -372,6 +389,35 @@ impl Decode {
 
     fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.pub_message();
+        self.reset();
+        result
+    }
+
+    fn unsub_message(&mut self) -> Result<Poll<Message>, Error> {
+        from_utf8(&self.params)
+            .map_err(Error::Utf8)
+            .and_then(|unsub_message| {
+                let result: Vec<&str> = unsub_message.trim().split_whitespace().collect();
+
+                match result[..] {
+                    [sid] => Ok(Poll::Ready(Message::UnSub(sid.to_string(), None))),
+                    [sid, max_msgs_message] => {
+                        if let Ok(max_message) = u32::from_str(max_msgs_message) {
+                            Ok(Poll::Ready(Message::UnSub(
+                                sid.to_string(),
+                                Some(max_message),
+                            )))
+                        } else {
+                            Err(Error::Parse)
+                        }
+                    }
+                    _ => Err(Error::Parse),
+                }
+            })
+    }
+
+    fn unsub_complete(&mut self) -> Result<Poll<Message>, Error> {
+        let result = self.unsub_message();
         self.reset();
         result
     }
@@ -692,6 +738,33 @@ fn decode_pub_message() {
         assert_eq!(subject, String::from("FOO"));
         assert_eq!(reply, None);
         assert_eq!(content, String::from("Hello NATS!"));
+    } else {
+        panic!("message parse error");
+    }
+}
+
+#[test]
+fn decode_unsub_message() {
+    let mut decode = Decode::new(512);
+
+    decode.set_buff(b"UNSUB hello\r\n");
+
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::UnSub(sid, max_message))) = result {
+        assert_eq!(sid, String::from("hello"));
+        assert_eq!(max_message, None);
+    } else {
+        panic!("message parse error");
+    }
+
+    decode.set_buff(b"UNSUB hello 5\r\n");
+
+    let result = decode.decode();
+
+    if let Ok(Poll::Ready(Message::UnSub(sid, max_message))) = result {
+        assert_eq!(sid, String::from("hello"));
+        assert_eq!(max_message, Some(5));
     } else {
         panic!("message parse error");
     }

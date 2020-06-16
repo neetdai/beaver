@@ -39,7 +39,7 @@ pub(super) struct Consumer<'a> {
     map: HashMap<Uuid, WriteStream>,
     recevier: Receiver<ChannelMessage>,
     config: &'a Config,
-    sid_map: HashMap<String, (Uuid, SubListReceiver<String>)>,
+    sid_map: HashMap<String, (Uuid, SubListReceiver<String>, Option<u32>)>,
     sub_list: SubList<String>,
 }
 
@@ -117,11 +117,21 @@ impl<'a> Consumer<'a> {
                             debug!("sid {:?}", sid);
 
                             // 注册订阅指定的主题
-                            let receiver: SubListReceiver<String> = self.sub_list.subscribe(subject);
-                            self.sid_map.insert(sid, (uuid, receiver));
+                            let receiver: SubListReceiver<String> =
+                                self.sub_list.subscribe(subject);
+                            self.sid_map.insert(sid, (uuid, receiver, None));
 
                             if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
+                            }
+                        }
+                        Message::UnSub(sid, max_message) => {
+                            if max_message.is_some() {
+                                if let Some((_, _, max)) = self.sid_map.get_mut(&sid) {
+                                    *max = max_message;
+                                }
+                            } else {
+                                self.sid_map.remove(&sid);
                             }
                         }
                         Message::Pub(subject, reply_to, content) => {
@@ -171,7 +181,7 @@ impl<'a> Consumer<'a> {
         reply_to: &Option<String>,
     ) -> Result<(), IoError> {
         let mut list = Vec::new();
-        for (sid, (uuid, ref recv)) in self.sid_map.iter_mut() {
+        for (sid, (uuid, ref recv, max)) in self.sid_map.iter_mut() {
             debug!("wait sid {:?}", &sid);
             let poll_result = poll_fn(|cx| {
                 let mut fut = recv.recv_iter();
@@ -191,11 +201,11 @@ impl<'a> Consumer<'a> {
             // let try_iter = poll_result;
             if let Some(try_iter) = poll_result {
                 debug!("{:?}", &sid);
-                list.push((sid, uuid, try_iter));
+                list.push((sid, uuid, try_iter, max));
             }
         }
 
-        for (sid, uuid, try_iter) in list {
+        for (sid, uuid, try_iter, max) in list {
             if let Some(stream) = self.map.get_mut(uuid) {
                 for message in try_iter {
                     stream
@@ -210,6 +220,14 @@ impl<'a> Consumer<'a> {
                             .as_bytes(),
                         )
                         .await?;
+
+                    if let Some(total) = max {
+                        *total -= 1;
+
+                        if *total == 0 {
+                            break;
+                        }
+                    }
                 }
             }
         }
