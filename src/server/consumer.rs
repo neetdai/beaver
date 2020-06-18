@@ -39,7 +39,7 @@ pub(super) struct Consumer<'a> {
     map: HashMap<Uuid, WriteStream>,
     recevier: Receiver<ChannelMessage>,
     config: &'a Config,
-    sid_map: HashMap<Uuid, (String, SubListReceiver<String>, Option<u32>)>,
+    sid_map: HashMap<String, (Uuid, SubListReceiver<String>, Option<u32>)>,
     sub_list: SubList<String>,
 }
 
@@ -91,6 +91,10 @@ impl<'a> Consumer<'a> {
                 match channel_message {
                     ChannelMessage::Shutdown(uuid) => {
                         self.map.remove(&uuid);
+
+                        self.sid_map.retain(|_, item| item.0 != uuid);
+
+                        debug!("map.len {:?}, sid.len {:?}", self.map.len(), self.sid_map.len());
                     }
                     ChannelMessage::Message(uuid, message) => match message {
                         Message::Connect(connect_info) => {
@@ -119,7 +123,7 @@ impl<'a> Consumer<'a> {
                             // 注册订阅指定的主题
                             let receiver: SubListReceiver<String> =
                                 self.sub_list.subscribe(subject);
-                            self.sid_map.insert(uuid, (sid, receiver, None));
+                            self.sid_map.insert(sid, (uuid, receiver, None));
 
                             if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
@@ -127,11 +131,11 @@ impl<'a> Consumer<'a> {
                         }
                         Message::UnSub(sid, max_message) => {
                             if max_message.is_some() {
-                                if let Some((_, _, max)) = self.sid_map.get_mut(&uuid) {
+                                if let Some((_, _, max)) = self.sid_map.get_mut(&sid) {
                                     *max = max_message;
                                 }
                             } else {
-                                self.sid_map.remove(&uuid);
+                                self.sid_map.remove(&sid);
                             }
 
                             if let Err(e) = self.send_ok(&uuid).await {
@@ -185,7 +189,7 @@ impl<'a> Consumer<'a> {
         reply_to: &Option<String>,
     ) -> Result<(), IoError> {
         let mut list = Vec::new();
-        for (uuid, (sid, ref recv, max)) in self.sid_map.iter_mut() {
+        for (sid, (uuid, ref recv, max)) in self.sid_map.iter_mut() {
             debug!("wait sid {:?}", &sid);
             let poll_result = poll_fn(|cx| {
                 let mut fut = recv.recv_iter();
@@ -209,7 +213,7 @@ impl<'a> Consumer<'a> {
             }
         }
 
-        debug!("212 line list.length {}", list.len());
+        println!("publish list len {:?}", list.len());
         for (sid, uuid, try_iter, max) in list {
             if let Some(stream) = self.map.get_mut(uuid) {
                 for message in try_iter {
