@@ -91,6 +91,10 @@ impl<'a> Consumer<'a> {
                 match channel_message {
                     ChannelMessage::Shutdown(uuid) => {
                         self.map.remove(&uuid);
+
+                        self.sid_map.retain(|_, item| item.0 != uuid);
+
+                        debug!("map.len {:?}, sid.len {:?}", self.map.len(), self.sid_map.len());
                     }
                     ChannelMessage::Message(uuid, message) => match message {
                         Message::Connect(connect_info) => {
@@ -205,6 +209,7 @@ impl<'a> Consumer<'a> {
             }
         }
 
+        println!("publish list len {:?}", list.len());
         for (sid, uuid, try_iter, max) in list {
             if let Some(stream) = self.map.get_mut(uuid) {
                 for message in try_iter {
