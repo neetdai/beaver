@@ -1,8 +1,8 @@
 use async_spmc::{Receiver, Sender};
 use std::fmt::{Debug, Error as FmtError, Formatter};
-use std::iter::IntoIterator;
 use std::iter::Iterator;
 use std::ops::FnMut;
+use std::slice::Iter;
 
 // 作为前缀树的缓存, 使用lru策略
 #[derive(Debug)]
@@ -38,6 +38,14 @@ impl<T> Level<T> {
             self.inner.remove(key);
         }
     }
+
+    fn iter(&self) -> Iter<T> {
+        self.inner.iter()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
 }
 
 #[test]
@@ -51,12 +59,18 @@ fn sublist_level() {
     level.remove(|value| *value == 1);
 }
 
-struct Entry<T> {
+struct Entry<T>
+where
+    T: Debug,
+{
     sender: Sender<T>,
     next_level: Level<(String, Entry<T>)>,
 }
 
-impl<T> Entry<T> {
+impl<T> Entry<T>
+where
+    T: Debug,
+{
     fn new() -> Self {
         Self {
             sender: Sender::new(),
@@ -118,12 +132,30 @@ impl<T> Entry<T> {
             }
         }
     }
+
+    fn total(&self) -> usize {
+        let mut sum: usize = 0;
+
+        if self.next_level.len() == 0 {
+            1
+        } else {
+            for item in self.next_level.iter() {
+                sum += item.1.total();
+            }
+
+            sum
+        }
+    }
 }
 
-impl<T> Debug for Entry<T> {
+impl<T> Debug for Entry<T>
+where
+    T: Debug,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), FmtError> {
         f.debug_struct("Entry")
             .field("next_level", &self.next_level)
+            .field("sender", &self.sender)
             .finish()
     }
 }
@@ -149,14 +181,14 @@ fn sub_entry() {
 #[derive(Debug)]
 pub(super) struct SubList<T>
 where
-    T: Clone,
+    T: Clone + Debug,
 {
     root: Entry<T>,
 }
 
 impl<T> SubList<T>
 where
-    T: Clone,
+    T: Clone + Debug,
 {
     pub(super) fn new() -> Self {
         Self { root: Entry::new() }
@@ -177,6 +209,10 @@ where
     fn split(key: String) -> Vec<String> {
         key.split('.').map(|item| item.to_string()).collect()
     }
+
+    pub fn total(&self) -> usize {
+        self.root.total()
+    }
 }
 
 #[test]
@@ -184,12 +220,25 @@ fn test_trie() {
     use futures::executor::block_on;
     let mut sublist: SubList<usize> = SubList::new();
 
-    let recv = sublist.subscribe(String::from("hello.world.fuck"));
+    for _ in 0..100 {
+        let recv = sublist.subscribe(String::from("hello.world.fuck"));
 
-    sublist.send(String::from("hello.world.fuck"), 10);
+        sublist.send(String::from("hello.world.fuck"), 10);
 
-    let mut iter = block_on(recv.recv_iter());
-    assert_eq!(iter.next(), Some(10));
+        let mut iter = block_on(recv.recv_iter());
+        assert_eq!(iter.next(), Some(10));
+    }
 
+    for _ in 0..100 {
+        let recv = sublist.subscribe(String::from("hello.world.bitch"));
+
+        sublist.send(String::from("hello.world.bitch"), 10);
+
+        let mut iter = block_on(recv.recv_iter());
+        assert_eq!(iter.next(), Some(10));
+    }
+
+    assert_eq!(sublist.total(), 2);
     sublist.remove(String::from("hello.world.fuck"));
+    sublist.remove(String::from("hello.world.bitch"));
 }
