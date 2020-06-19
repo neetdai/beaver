@@ -2,28 +2,24 @@ use super::channel_message::ChannelMessage;
 use super::decode::Message;
 use super::encode;
 use super::sub_list::SubList;
+use super::sub_struct::{MessageEvent, SubStruct};
 use super::write_stream::WriteStream;
 use crate::config::Config;
 use async_spmc::Receiver as SubListReceiver;
-use futures::future::join_all;
-use futures::future::poll_fn;
 use log::{debug, error, info};
 use serde_json::Error as SerdeJsonError;
-use std::collections::HashMap;
-use std::future::Future;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Error as IoError;
 use std::mem::replace;
 use std::net::SocketAddr;
 use std::ops::Drop;
-use std::pin::Pin;
-use std::task::Poll;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
-use tokio::select;
 use tokio::spawn;
-use tokio::sync::mpsc::Receiver;
-use uuid::Uuid;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub(super) enum ConsumerError {
@@ -36,17 +32,17 @@ pub(super) enum ConsumerError {
 
 #[derive(Debug)]
 pub(super) struct Consumer<'a> {
-    map: HashMap<Uuid, WriteStream>,
-    recevier: Receiver<ChannelMessage>,
+    map: BTreeMap<u64, Arc<Mutex<WriteStream>>>,
+    recevier: UnboundedReceiver<ChannelMessage>,
     config: &'a Config,
-    sid_map: HashMap<String, (Uuid, SubListReceiver<String>, Option<u32>)>,
-    sub_list: SubList<String>,
+    sid_map: HashMap<String, UnboundedSender<MessageEvent>>,
+    sub_list: SubList<(String, Option<String>, String)>,
 }
 
 impl<'a> Consumer<'a> {
-    pub(super) fn new(config: &'a Config, recevier: Receiver<ChannelMessage>) -> Self {
+    pub(super) fn new(config: &'a Config, recevier: UnboundedReceiver<ChannelMessage>) -> Self {
         Self {
-            map: HashMap::new(),
+            map: BTreeMap::new(),
             recevier,
             config,
             sid_map: HashMap::new(),
@@ -56,7 +52,8 @@ impl<'a> Consumer<'a> {
 
     pub(super) async fn add(
         &mut self,
-        uuid: Uuid,
+        // uuid: Uuid,
+        uuid: u64,
         stream: WriteHalf<TcpStream>,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
@@ -81,7 +78,7 @@ impl<'a> Consumer<'a> {
 
         write_stream.write(info.format()?.as_bytes()).await?;
 
-        self.map.insert(uuid, write_stream);
+        self.map.insert(uuid, Arc::new(Mutex::new(write_stream)));
         Ok(())
     }
 
@@ -92,9 +89,12 @@ impl<'a> Consumer<'a> {
                     ChannelMessage::Shutdown(uuid) => {
                         self.map.remove(&uuid);
 
-                        self.sid_map.retain(|_, item| item.0 != uuid);
-
-                        debug!("map.len {:?}, sid.len {:?}", self.map.len(), self.sid_map.len());
+                        info!(
+                            "map.len {:?}, sid.len {:?} sublist total {:?}",
+                            self.map.len(),
+                            self.sid_map.len(),
+                            self.sub_list.total()
+                        );
                     }
                     ChannelMessage::Message(uuid, message) => match message {
                         Message::Connect(connect_info) => {
@@ -103,14 +103,14 @@ impl<'a> Consumer<'a> {
                             if let Some(ssl_require) =
                                 connect_info.get("ssl_require").and_then(|v| v.as_bool())
                             {
-                                self.set_ssl_required(&uuid, ssl_require);
+                                self.set_ssl_required(&uuid, ssl_require).await;
                             }
 
                             if let Some(verbose) =
                                 connect_info.get("verbose").and_then(|v| v.as_bool())
                             {
                                 debug!("{:?}", verbose);
-                                self.set_verbose(&uuid, verbose);
+                                self.set_verbose(&uuid, verbose).await;
                             }
 
                             if let Err(e) = self.send_ok(&uuid).await {
@@ -121,36 +121,46 @@ impl<'a> Consumer<'a> {
                             debug!("sid {:?}", sid);
 
                             // 注册订阅指定的主题
-                            let receiver: SubListReceiver<String> =
+                            let sub_receiver: SubListReceiver<(String, Option<String>, String)> =
                                 self.sub_list.subscribe(subject);
-                            self.sid_map.insert(sid, (uuid, receiver, None));
 
+                            let (sender, receiver): (
+                                UnboundedSender<MessageEvent>,
+                                UnboundedReceiver<MessageEvent>,
+                            ) = unbounded_channel();
+
+                            if let Some(stream) = self.map.get(&uuid) {
+                                let sub_struct: SubStruct = SubStruct::new(
+                                    stream.clone(),
+                                    sub_receiver,
+                                    receiver,
+                                    sid.clone(),
+                                );
+
+                                self.sid_map.insert(sid, sender);
+
+                                spawn(sub_struct.run());
+                            }
                             if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
                             }
                         }
                         Message::UnSub(sid, max_message) => {
-                            if max_message.is_some() {
-                                if let Some((_, _, max)) = self.sid_map.get_mut(&sid) {
-                                    *max = max_message;
+                            if let Some(send) = self.sid_map.get_mut(&sid) {
+                                if let Err(e) = send.send(MessageEvent::UnSub(max_message)) {
+                                    error!("{:?}", e);
                                 }
-                            } else {
-                                self.sid_map.remove(&sid);
                             }
+
+                            self.sid_map.remove(&sid);
 
                             if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
                             }
                         }
                         Message::Pub(subject, reply_to, content) => {
-                            self.sub_list.send(subject.clone(), content);
-
-                            if let Err(e) = self
-                                .send_all_message_to_receiver(subject.as_str(), &reply_to)
-                                .await
-                            {
-                                error!("{:?}", e);
-                            }
+                            self.sub_list
+                                .send(subject.clone(), (content, reply_to, subject));
 
                             if let Err(e) = self.send_ok(&uuid).await {
                                 error!("{:?}", e);
@@ -180,73 +190,12 @@ impl<'a> Consumer<'a> {
         }
     }
 
-    // 遍历这个sid_map中所有的receiver, 挑选出可以返回的接收者
-    // 这里可以优化, 由于123行中, sub_list.send() 是单生产者多消费者模型
-    // 那么就有可能出现, 只有一个消费者接受到消息, 但是需要遍历整个 sid_map 的情况
-    async fn send_all_message_to_receiver(
-        &mut self,
-        subject: &str,
-        reply_to: &Option<String>,
-    ) -> Result<(), IoError> {
-        let mut list = Vec::new();
-        for (sid, (uuid, ref recv, max)) in self.sid_map.iter_mut() {
-            debug!("wait sid {:?}", &sid);
-            let poll_result = poll_fn(|cx| {
-                let mut fut = recv.recv_iter();
-                let fut = unsafe { Pin::new_unchecked(&mut fut) };
-
-                let result = fut.poll(cx);
-
-                debug!("poll result {:?}", result.is_ready());
-
-                match result {
-                    Poll::Ready(try_iter) => Poll::Ready(Some(try_iter)),
-                    Poll::Pending => Poll::Ready(None),
-                }
-            })
-            .await;
-
-            // let try_iter = poll_result;
-            if let Some(try_iter) = poll_result {
-                debug!("{:?}", &sid);
-                list.push((sid, uuid, try_iter, max));
-            }
-        }
-
-        println!("publish list len {:?}", list.len());
-        for (sid, uuid, try_iter, max) in list {
-            if let Some(stream) = self.map.get_mut(uuid) {
-                for message in try_iter {
-                    stream
-                        .write(
-                            encode::Msg::new(
-                                subject,
-                                sid.as_str(),
-                                reply_to.as_ref().map(|reply| reply.as_str()),
-                                message.as_str(),
-                            )
-                            .format()
-                            .as_bytes(),
-                        )
-                        .await?;
-
-                    if let Some(total) = max {
-                        *total -= 1;
-
-                        if *total == 0 {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn send_ping(&mut self, uuid: &Uuid) -> Result<(), IoError> {
+    async fn send_ping(&mut self, uuid: &u64) -> Result<(), IoError> {
         match self.map.get_mut(uuid) {
             Some(stream) => {
-                stream.write(encode::Ping::format().as_bytes()).await?;
+                (*stream.lock().await)
+                    .write(encode::Ping::format().as_bytes())
+                    .await?;
                 Ok(())
             }
             None => {
@@ -256,10 +205,12 @@ impl<'a> Consumer<'a> {
         }
     }
 
-    async fn send_pong(&mut self, uuid: &Uuid) -> Result<(), IoError> {
+    async fn send_pong(&mut self, uuid: &u64) -> Result<(), IoError> {
         match self.map.get_mut(uuid) {
             Some(stream) => {
-                stream.write(encode::Pong::format().as_bytes()).await?;
+                (*stream.lock().await)
+                    .write(encode::Pong::format().as_bytes())
+                    .await?;
                 Ok(())
             }
             None => {
@@ -269,10 +220,10 @@ impl<'a> Consumer<'a> {
         }
     }
 
-    async fn send_ok(&mut self, uuid: &Uuid) -> Result<(), IoError> {
+    async fn send_ok(&mut self, uuid: &u64) -> Result<(), IoError> {
         match self.map.get_mut(uuid) {
             Some(stream) => {
-                stream
+                (*stream.lock().await)
                     .send_ok(encode::ResponseOk::format().as_bytes())
                     .await?;
                 Ok(())
@@ -284,30 +235,30 @@ impl<'a> Consumer<'a> {
         }
     }
 
-    fn set_ssl_required(&mut self, uuid: &Uuid, ssl_require: bool) {
+    async fn set_ssl_required(&mut self, uuid: &u64, ssl_require: bool) {
         if let Some(stream) = self.map.get_mut(uuid) {
-            stream.set_ssl(ssl_require);
+            (*stream.lock().await).set_ssl(ssl_require);
         }
     }
 
-    fn set_verbose(&mut self, uuid: &Uuid, verbose: bool) {
+    async fn set_verbose(&mut self, uuid: &u64, verbose: bool) {
         if let Some(stream) = self.map.get_mut(uuid) {
-            stream.set_verbose(verbose);
+            (*stream.lock().await).set_verbose(verbose);
         }
     }
 }
 
-impl<'a> Drop for Consumer<'a> {
-    fn drop(&mut self) {
-        let tmp = replace(&mut self.map, HashMap::new());
+// impl<'a> Drop for Consumer<'a> {
+//     fn drop(&mut self) {
+//         let tmp = replace(&mut self.map, BTreeMap::new());
 
-        spawn(join_all(tmp.into_iter().map(
-            |(_, mut stream)| async move {
-                match stream.shutdown().await {
-                    Ok(_) => info!("stream shutdown both"),
-                    Err(e) => error!("{:?}", e),
-                };
-            },
-        )));
-    }
-}
+//         spawn(join_all(tmp.into_iter().map(
+//             |(_, mut stream)| async move {
+//                 match stream.shutdown().await {
+//                     Ok(_) => info!("stream shutdown both"),
+//                     Err(e) => error!("{:?}", e),
+//                 };
+//             },
+//         )));
+//     }
+// }
