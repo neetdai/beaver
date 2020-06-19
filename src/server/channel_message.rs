@@ -3,6 +3,6 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub(super) enum ChannelMessage {
-    Shutdown(Uuid),
-    Message(Uuid, Message),
+    Shutdown(u64),
+    Message(u64, Message),
 }

@@ -6,15 +6,16 @@ use std::net::SocketAddr;
 use std::task::Poll;
 use tokio::io::ReadHalf;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::yield_now;
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub(super) struct Productor {
     decode: Decode,
-    sender: Sender<ChannelMessage>,
-    uuid: Uuid,
+    sender: UnboundedSender<ChannelMessage>,
+    // uuid: Uuid,
+    uuid: u64,
     stream: ReadStream,
 
     local_addr: SocketAddr,
@@ -27,8 +28,9 @@ pub(super) struct Productor {
 impl Productor {
     pub(super) fn new(
         stream: ReadHalf<TcpStream>,
-        sender: Sender<ChannelMessage>,
-        uuid: Uuid,
+        sender: UnboundedSender<ChannelMessage>,
+        // uuid: Uuid,
+        uuid: u64,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
     ) -> Self {
@@ -51,7 +53,7 @@ impl Productor {
                 // tcp好像是规定如果读取的数据长度为0时, 代表没有数据输入
                 // 关闭tcp的读取之后要通知comsumer的tcp关闭写入
                 Ok(size) if size == 0 => {
-                    if let Err(e) = self.sender.try_send(ChannelMessage::Shutdown(self.uuid)) {
+                    if let Err(e) = self.sender.send(ChannelMessage::Shutdown(self.uuid)) {
                         info!("read stream can'\t shutdown becase {}", e);
                     }
                     break;
@@ -89,7 +91,7 @@ impl Productor {
                                                     .and_then(|value| value.as_bool())
                                                     .map_or(false, |value| value);
 
-                                                if let Err(e) = self.sender.try_send(
+                                                if let Err(e) = self.sender.send(
                                                     ChannelMessage::Message(self.uuid, message),
                                                 ) {
                                                     info!("{:?}", e);
@@ -98,7 +100,7 @@ impl Productor {
                                                 }
                                             }
                                             _ => {
-                                                if let Err(e) = self.sender.try_send(
+                                                if let Err(e) = self.sender.send(
                                                     ChannelMessage::Message(self.uuid, message),
                                                 ) {
                                                     info!("{:?}", e);

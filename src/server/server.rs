@@ -10,7 +10,7 @@ use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::spawn;
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::unbounded_channel;
 use uuid::Uuid;
 
 const CHANNEL_LENGTH: usize = 1024;
@@ -37,19 +37,21 @@ impl<'a> Server<'a> {
 
     pub async fn run(mut self) -> IoResult<()> {
         let mut listener = TcpListener::bind(self.add).await?;
-        let (sender, receiver) = channel::<ChannelMessage>(CHANNEL_LENGTH);
+        let (sender, receiver) = unbounded_channel::<ChannelMessage>();
 
         let mut consumer: Consumer = Consumer::new(self.config, receiver);
 
         // 生成链接的client_id
         let mut client_id: usize = 0;
+        let mut uuid: u64 = 0;
 
         loop {
             select! {
                 result = listener.accept() => {
                     match result {
                         Ok((socket, addr)) => {
-                            let uuid: Uuid = Uuid::new_v4();
+                            // let uuid: Uuid = Uuid::new_v4();
+                            uuid += 1;
                             let (read_stream, write_stream): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) = split(socket);
 
                             let product: Productor = Productor::new(read_stream, sender.clone(), uuid, self.add, addr);
