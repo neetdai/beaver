@@ -1,6 +1,4 @@
-use super::channel_message::ChannelMessage;
-use super::consumer::Consumer;
-use super::productor::Productor;
+use super::service::Service;
 use crate::config::{Config, ServerConfig};
 use log::{error, info};
 use std::io::Result as IoResult;
@@ -10,8 +8,9 @@ use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::select;
 use tokio::spawn;
-use tokio::sync::mpsc::unbounded_channel;
-use uuid::Uuid;
+use super::sub_list::SubList;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 
 const CHANNEL_LENGTH: usize = 1024;
 
@@ -20,6 +19,8 @@ pub enum Error {
     #[error("addr parse `{0}`")]
     AddrParse(#[from] AddrParseError),
 }
+
+type SubListShare = Arc<Mutex<SubList<(String, Option<String>, String)>>>;
 
 pub struct Server<'a> {
     config: &'a Config,
@@ -37,43 +38,25 @@ impl<'a> Server<'a> {
 
     pub async fn run(mut self) -> IoResult<()> {
         let mut listener = TcpListener::bind(self.add).await?;
-        let (sender, receiver) = unbounded_channel::<ChannelMessage>();
-
-        let mut consumer: Consumer = Consumer::new(self.config, receiver);
-
-        // 生成链接的client_id
         let mut client_id: usize = 0;
-        let mut uuid: u64 = 0;
+        let sub_list: SubListShare = Arc::new(
+            Mutex::new(SubList::new())  
+        );
 
         loop {
-            select! {
-                result = listener.accept() => {
-                    match result {
-                        Ok((socket, addr)) => {
-                            // let uuid: Uuid = Uuid::new_v4();
-                            uuid += 1;
-                            let (read_stream, write_stream): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) = split(socket);
+            match listener.accept().await {
+                Ok((socket, addr)) => {
+                    let (read_stream, write_stream): (ReadHalf<TcpStream>, WriteHalf<TcpStream>) =
+                        split(socket);
 
-                            let product: Productor = Productor::new(read_stream, sender.clone(), uuid, self.add, addr);
+                    let service: Service =
+                        Service::new(read_stream, write_stream, client_id, self.add, addr, sub_list.clone());
+                    client_id += 1;
 
-                            if let Err(e) = consumer.add(uuid, write_stream, self.add, addr, client_id).await {
-                                error!("{:?}", e);
-                            };
-
-                            // 客户端id + 1
-                            client_id += 1;
-
-                            spawn(async move {
-                                product.run().await;
-                            });
-                        },
-                        Err(e) => {
-                            error!("{:?}", e);
-                        }
-                    }
+                    spawn(service.run());
                 }
-                _ = consumer.run() => {
-
+                Err(e) => {
+                    error!("{:?}", e);
                 }
             }
         }

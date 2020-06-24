@@ -84,11 +84,11 @@ enum State {
 // }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Message {
+pub(super) enum Message<'a> {
     Connect(serde_json::Value),
-    Sub(String, Option<String>, String),
-    Pub(String, Option<String>, String),
-    UnSub(String, Option<u32>),
+    Sub(&'a str, Option<&'a str>, &'a str),
+    Pub(&'a str, Option<&'a str>, &'a str),
+    UnSub(&'a str, Option<u32>),
     Pong,
     Ping,
 }
@@ -127,7 +127,7 @@ impl Decode {
                         b'S' => self.state = State::S,
                         b'U' => self.state = State::U,
                         _ => {
-                            self.reset();
+                            // self.reset();
                             return Err(Error::Parse);
                         }
                     },
@@ -272,7 +272,7 @@ impl Decode {
                         }
                     },
                     _ => {
-                        self.reset();
+                        // self.reset();
                         return Err(Error::Parse);
                     }
                 }
@@ -285,12 +285,8 @@ impl Decode {
     fn sub_message(&self) -> Result<Message, Error> {
         let sub: Vec<&str> = { from_utf8(&self.params)?.split_whitespace().collect() };
         match sub[..] {
-            [subject, sid] => Ok(Message::Sub(subject.to_string(), None, sid.to_string())),
-            [subject, group, sid] => Ok(Message::Sub(
-                subject.to_string(),
-                Some(group.to_string()),
-                sid.to_string(),
-            )),
+            [subject, sid] => Ok(Message::Sub(subject, None, sid)),
+            [subject, group, sid] => Ok(Message::Sub(subject, Some(group), sid)),
             _ => Err(Error::Parse),
         }
     }
@@ -309,7 +305,7 @@ impl Decode {
         Message::Ping
     }
 
-    fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.state = State::Start;
         self.params.clear();
     }
@@ -317,25 +313,25 @@ impl Decode {
     fn sub_message_complete(&mut self) -> Result<Poll<Message>, Error> {
         // 处理订阅
         let result = self.sub_message();
-        self.reset();
+        // self.reset();
         result.map(Poll::Ready)
     }
 
     fn connect_message_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.connect_message();
-        self.reset();
+        // self.reset();
         result.map(Poll::Ready)
     }
 
     fn pong_message_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.pong_message();
-        self.reset();
+        // self.reset();
         Ok(Poll::Ready(result))
     }
 
     fn ping_message_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.ping_message();
-        self.reset();
+        // self.reset();
         Ok(Poll::Ready(result))
     }
 
@@ -357,11 +353,7 @@ impl Decode {
                             usize::from_str(content_length).map_err(|_| Error::Parse)?;
 
                         if content_length == content.len() {
-                            Ok(Poll::Ready(Message::Pub(
-                                subject.to_string(),
-                                None,
-                                content.to_string(),
-                            )))
+                            Ok(Poll::Ready(Message::Pub(subject, None, content)))
                         } else {
                             Err(Error::Parse)
                         }
@@ -371,11 +363,7 @@ impl Decode {
                             usize::from_str(content_length).map_err(|_| Error::Parse)?;
 
                         if content_length == content.len() {
-                            Ok(Poll::Ready(Message::Pub(
-                                subject.to_string(),
-                                Some(replay.to_string()),
-                                content.to_string(),
-                            )))
+                            Ok(Poll::Ready(Message::Pub(subject, Some(replay), content)))
                         } else {
                             Err(Error::Parse)
                         }
@@ -389,7 +377,7 @@ impl Decode {
 
     fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.pub_message();
-        self.reset();
+        // self.reset();
         result
     }
 
@@ -400,13 +388,10 @@ impl Decode {
                 let result: Vec<&str> = unsub_message.trim().split_whitespace().collect();
 
                 match result[..] {
-                    [sid] => Ok(Poll::Ready(Message::UnSub(sid.to_string(), None))),
+                    [sid] => Ok(Poll::Ready(Message::UnSub(sid, None))),
                     [sid, max_msgs_message] => {
                         if let Ok(max_message) = u32::from_str(max_msgs_message) {
-                            Ok(Poll::Ready(Message::UnSub(
-                                sid.to_string(),
-                                Some(max_message),
-                            )))
+                            Ok(Poll::Ready(Message::UnSub(sid, Some(max_message))))
                         } else {
                             Err(Error::Parse)
                         }
@@ -418,7 +403,7 @@ impl Decode {
 
     fn unsub_complete(&mut self) -> Result<Poll<Message>, Error> {
         let result = self.unsub_message();
-        self.reset();
+        // self.reset();
         result
     }
 }
@@ -437,6 +422,8 @@ fn decode_pong() {
         panic!("message parse error");
     }
 
+    decode.reset();
+
     // linux的客户端
     decode.set_buff(b"PONG\n");
 
@@ -446,6 +433,8 @@ fn decode_pong() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     // 区分大小写
     decode.set_buff(b"pong\r\n");
@@ -464,6 +453,8 @@ fn decode_ping_linux() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -478,6 +469,8 @@ fn decode_ping_windows() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -508,6 +501,8 @@ fn decode_connect_windows() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -538,6 +533,8 @@ fn decode_connect_linux() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -574,11 +571,15 @@ fn decode_connect_chunks() {
         panic!("message parse error");
     }
 
+    decode.reset();
+
     // 分开接收数据也是要合乎解析
     decode.set_buff(b"CONN");
     assert!(decode.decode().unwrap().is_pending());
     decode.set_buff(b"ect asdfasd\r\n");
     assert!(decode.decode().is_err());
+
+    decode.reset();
 }
 
 #[test]
@@ -610,6 +611,8 @@ fn decode_connect_error() {
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -622,12 +625,14 @@ fn decode_sub() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Sub(subject, group, sid))) = result {
-        assert_eq!(subject, "asdfasd".to_string());
+        assert_eq!(subject, "asdfasd");
         assert!(group.is_none());
-        assert_eq!(sid, "sdfaf".to_string());
+        assert_eq!(sid, "sdfaf");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     // 有订阅队列
     decode.set_buff(b"SUB asdfasd sdfds sdfaf\r\n");
@@ -635,12 +640,14 @@ fn decode_sub() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Sub(subject, group, sid))) = result {
-        assert_eq!(subject, "asdfasd".to_string());
-        assert_eq!(group, Some("sdfds".to_string()));
-        assert_eq!(sid, "sdfaf".to_string());
+        assert_eq!(subject, "asdfasd");
+        assert_eq!(group, Some("sdfds"));
+        assert_eq!(sid, "sdfaf");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -653,12 +660,14 @@ fn decode_sub_linux() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Sub(subject, group, sid))) = result {
-        assert_eq!(subject, "asdfasd".to_string());
+        assert_eq!(subject, "asdfasd");
         assert!(group.is_none());
-        assert_eq!(sid, "sdfaf".to_string());
+        assert_eq!(sid, "sdfaf");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     // 有订阅队列
     decode.set_buff(b"SUB asdfasd sdfds sdfaf\n");
@@ -666,12 +675,14 @@ fn decode_sub_linux() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Sub(subject, group, sid))) = result {
-        assert_eq!(subject, "asdfasd".to_string());
-        assert_eq!(group, Some("sdfds".to_string()));
-        assert_eq!(sid, "sdfaf".to_string());
+        assert_eq!(subject, "asdfasd");
+        assert_eq!(group, Some("sdfds"));
+        assert_eq!(sid, "sdfaf");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -682,6 +693,8 @@ fn decode_sub_protocol_error() {
     decode.set_buff(b"sub asdfasd sdfds sdfaf\n");
     let result = decode.decode();
     result.unwrap();
+
+    decode.reset();
 }
 
 #[test]
@@ -692,6 +705,8 @@ fn decode_sub_error() {
     decode.set_buff(b"SUB asdfasd asdfasdf sdfds sdfaf\n");
     let result = decode.decode();
     result.unwrap();
+
+    decode.reset();
 }
 
 #[test]
@@ -701,33 +716,39 @@ fn decode_pub_message() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
-        assert_eq!(subject, String::from("FOO"));
+        assert_eq!(subject, "FOO");
         assert_eq!(reply, None);
-        assert_eq!(content, String::from("Hello NATS!"));
+        assert_eq!(content, "Hello NATS!");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     decode.set_buff(b"PUB FOO sdfsa 11\r\nHello World\r\nPUB F= 12\r\nHello World!\r\n");
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
-        assert_eq!(subject, String::from("FOO"));
-        assert_eq!(reply, Some(String::from("sdfsa")));
-        assert_eq!(content, String::from("Hello World"));
+        assert_eq!(subject, "FOO");
+        assert_eq!(reply, Some("sdfsa"));
+        assert_eq!(content, "Hello World");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
-        assert_eq!(subject, String::from("F="));
+        assert_eq!(subject, "F=");
         assert_eq!(reply, None);
-        assert_eq!(content, String::from("Hello World!"));
+        assert_eq!(content, "Hello World!");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     decode.set_buff(b"PUB FOO");
     decode.set_buff(b" 11\r\nHello NATS!\r\n");
@@ -735,12 +756,14 @@ fn decode_pub_message() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Pub(subject, reply, content))) = result {
-        assert_eq!(subject, String::from("FOO"));
+        assert_eq!(subject, "FOO");
         assert_eq!(reply, None);
-        assert_eq!(content, String::from("Hello NATS!"));
+        assert_eq!(content, "Hello NATS!");
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }
 
 #[test]
@@ -752,20 +775,24 @@ fn decode_unsub_message() {
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::UnSub(sid, max_message))) = result {
-        assert_eq!(sid, String::from("hello"));
+        assert_eq!(sid, "hello");
         assert_eq!(max_message, None);
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 
     decode.set_buff(b"UNSUB hello 5\r\n");
 
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::UnSub(sid, max_message))) = result {
-        assert_eq!(sid, String::from("hello"));
+        assert_eq!(sid, "hello");
         assert_eq!(max_message, Some(5));
     } else {
         panic!("message parse error");
     }
+
+    decode.reset();
 }

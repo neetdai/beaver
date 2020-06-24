@@ -12,26 +12,16 @@ pub(super) struct WriteStream {
     stream: WriteHalf<TcpStream>,
     ssl_required: bool,
 
-    local_addr: SocketAddr,
-
-    remote_addr: SocketAddr,
-
     // 是否回复
     verbose: bool,
 }
 
 impl WriteStream {
-    pub(super) fn new(
-        stream: WriteHalf<TcpStream>,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
-    ) -> Self {
+    pub(super) fn new(stream: WriteHalf<TcpStream>) -> Self {
         Self {
             stream,
             ssl_required: false,
             verbose: true,
-            local_addr,
-            remote_addr,
         }
     }
 
