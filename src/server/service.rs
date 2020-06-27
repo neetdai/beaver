@@ -1,34 +1,36 @@
 use super::decode::{Decode, Error, Message};
-use super::encode::{Info, Ping, Pong, ResponseOk};
+use super::encode::{Info, Ping, Pong, ResponseOk, Msg};
 use super::read_stream::ReadStream;
-use super::write_stream::WriteStream;
 use super::sub_list::SubList;
+use super::write_stream::WriteStream;
 use crate::config::Config;
 use crate::config::ServerConfig;
-use crate::global_static_config::CONFIG;
-use log::{error, debug};
+use crate::global_static::CONFIG;
+use log::{debug, error};
+use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Poll;
-use std::io::Result as IoResult;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::Mutex;
-use async_spmc::{Receiver as SubReceiver};
+use std::time::Instant;
 
 const BUFF_SIZE: usize = 512;
+
+type WStream = Arc<Mutex<WriteStream>>;
 
 #[derive(Debug)]
 pub(super) struct Service {
     read_stream: ReadStream,
-    write_stream: Arc<Mutex<WriteStream>>,
+    write_stream: WStream,
     decode: Decode,
     config: &'static Config,
     client_id: usize,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
-    sub_list: Arc<Mutex<SubList<(String, Option<String>, String)>>>,
+    sub_list: Arc<Mutex<SubList<(WStream, String, Option<u32>)>>>,
 }
 
 impl Service {
@@ -38,7 +40,7 @@ impl Service {
         client_id: usize,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-        sub_list: Arc<Mutex<SubList<(String, Option<String>, String)>>>
+        sub_list: Arc<Mutex<SubList<(WStream, String, Option<u32>)>>>,
     ) -> Self {
         let read_stream: ReadStream = ReadStream::new(read_stream);
         let write_stream: Arc<Mutex<WriteStream>> =
@@ -59,27 +61,23 @@ impl Service {
     }
 
     pub(super) async fn run(mut self) {
-        debug!("remote addr {} ==========> local addr {}", self.remote_addr, self.local_addr);
+        debug!(
+            "remote addr {} ==========> local addr {}",
+            self.remote_addr, self.local_addr
+        );
         let mut buffer: [u8; BUFF_SIZE] = [0; BUFF_SIZE];
 
         {
             let mut stream = self.write_stream.lock().await;
 
-            let server: &ServerConfig =
-                self.config.get_server();
+            let server: &ServerConfig = self.config.get_server();
             let info: Info = Info::new()
-                .set_server_id(
-                    server.get_server_id().clone(),
-                )
-                .set_server_name(
-                    server.get_server_name().clone(),
-                )
+                .set_server_id(server.get_server_id().clone())
+                .set_server_name(server.get_server_name().clone())
                 .set_version(server.get_version().clone())
                 .set_host(server.get_ip().clone())
                 .set_port(server.get_port())
-                .set_auth_required(
-                    server.get_auth_required(),
-                )
+                .set_auth_required(server.get_auth_required())
                 .set_ssl_required(server.get_ssl_required())
                 .set_max_payload(server.get_max_payload())
                 .set_proto(server.get_proto())
@@ -90,10 +88,7 @@ impl Service {
                 Ok(result) => {
                     debug!("local addr {} send info", self.local_addr);
 
-                    if let Err(e) = stream
-                        .write(result.as_bytes())
-                        .await
-                    {
+                    if let Err(e) = stream.write(result.as_bytes()).await {
                         error!("{:?}", e);
                         return;
                     }
@@ -124,13 +119,22 @@ impl Service {
                                             match message {
                                                 // 由于这里的message的参数都是借用的, 所以尽量在原地使用
                                                 Message::Connect(conn_info) => {
-                                                    debug!("remote addr {} send connect", self.remote_addr);
+                                                    debug!(
+                                                        "remote addr {} send connect",
+                                                        self.remote_addr
+                                                    );
 
-                                                    if let Some(ssl_require) = conn_info.get("ssl_require").and_then(|v| v.as_bool()) {
+                                                    if let Some(ssl_require) = conn_info
+                                                        .get("ssl_require")
+                                                        .and_then(|v| v.as_bool())
+                                                    {
                                                         self.set_ssl(ssl_require).await;
                                                     }
 
-                                                    if let Some(verbose) = conn_info.get("verbose").and_then(|v| v.as_bool()) {
+                                                    if let Some(verbose) = conn_info
+                                                        .get("verbose")
+                                                        .and_then(|v| v.as_bool())
+                                                    {
                                                         self.set_verbose(verbose).await;
                                                     }
 
@@ -141,22 +145,65 @@ impl Service {
                                                 Message::Sub(subject, group, sid) => {
                                                     debug!("remote addr {} send sub, subject {} sid {}", self.remote_addr, subject, sid);
 
+                                                    let mut sub_list = self.sub_list.lock().await;
+                                                    (*sub_list).subscribe(subject.to_string(), (self.write_stream.clone(), sid.to_string(), None));
                                                 }
                                                 Message::Pub(subject, reply_to, content) => {
-                                                    let mut sublist = self.sub_list.lock().await;
+                                                    debug!("remote addr {} pub subject {} content {}", self.remote_addr, subject, content);
+                                                    {
+                                                        let mut sub_list = self.sub_list.lock().await;
 
-                                                    
+                                                        if let Some(list) = (*sub_list).get_subscribe_item(subject.to_string()) {
+                                                            let mut remove_index: Vec<usize> = Vec::new();
+
+                                                            for (index, (write_stream, sid, max_message)) in list.iter_mut().enumerate() {
+                                                                let msg = Msg::new(subject, sid.as_str(), reply_to, content);
+                                                                let mut stream = write_stream.lock().await;
+                                                                // debug!("msg {:?}", std::str::from_utf8(&msg.format()));
+                                                                if let Err(e) = stream.write(&msg.format()).await {
+                                                                    error!("{:?}", e);
+                                                                }
+
+                                                                if let Some(max) = max_message {
+                                                                    if *max > 0 {
+                                                                        *max -= 1;
+                                                                    } else {
+                                                                        remove_index.insert(0, index);
+                                                                    }
+                                                                }
+                                                                
+                                                            }
+
+
+                                                            for index in remove_index {
+                                                                list.remove(index);
+                                                            }
+                                                        }
+
+                                                    }
+                                                    if let Err(e) = self.send_ok().await {
+                                                        error!("{:?}", e);
+                                                    }
                                                 }
-                                                Message::UnSub(sid, max_messages) => {}
+                                                Message::UnSub(sid, max_messages) => {
+                                                    let mut sublist = self.sub_list.lock().await;
+                                                    sublist.remove_subscription(|(_, ssid, _)| *ssid == sid.to_string());
+                                                }
                                                 Message::Pong => {
                                                     let mut stream = self.write_stream.lock().await;
-                                                    if let Err(e) = stream.write(Ping::format().as_bytes()).await {
+                                                    if let Err(e) = stream
+                                                        .write(Ping::format().as_bytes())
+                                                        .await
+                                                    {
                                                         error!("{:?}", e);
                                                     }
                                                 }
                                                 Message::Ping => {
                                                     let mut stream = self.write_stream.lock().await;
-                                                    if let Err(e) = stream.write(Pong::format().as_bytes()).await {
+                                                    if let Err(e) = stream
+                                                        .write(Pong::format().as_bytes())
+                                                        .await
+                                                    {
                                                         error!("{:?}", e);
                                                     }
                                                 }

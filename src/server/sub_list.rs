@@ -1,8 +1,7 @@
-use async_spmc::{Receiver, Sender};
 use std::fmt::{Debug, Error as FmtError, Formatter};
 use std::iter::Iterator;
 use std::ops::FnMut;
-use std::slice::Iter;
+use std::slice::{Iter, IterMut};
 
 // 作为前缀树的缓存, 使用lru策略
 #[derive(Debug)]
@@ -43,6 +42,10 @@ impl<T> Level<T> {
         self.inner.iter()
     }
 
+    fn iter_mut(&mut self) -> IterMut<T> {
+        self.inner.iter_mut()
+    }
+
     fn len(&self) -> usize {
         self.inner.len()
     }
@@ -63,7 +66,7 @@ struct Entry<T>
 where
     T: Debug,
 {
-    sender: Sender<T>,
+    inner: Vec<T>,
     next_level: Level<(String, Entry<T>)>,
 }
 
@@ -73,7 +76,7 @@ where
 {
     fn new() -> Self {
         Self {
-            sender: Sender::new(),
+            inner: Vec::new(),
             next_level: Level::new(),
         }
     }
@@ -84,35 +87,44 @@ where
             .map(|(_, entry)| &mut *entry)
     }
 
-    fn subscribe(&mut self, list: &mut Vec<String>) -> Receiver<T> {
+    fn subscribe(&mut self, list: &mut Vec<String>, subscription: T) {
         if list.is_empty() {
-            self.sender.subscribe()
+            self.inner.push(subscription);
         } else {
             let key: String = list.remove(0);
 
             match self.search_mut_entry(&key) {
-                Some(entry) => entry.subscribe(list),
+                Some(entry) => entry.subscribe(list, subscription),
                 None => {
                     let mut entry: Entry<T> = Self::new();
-                    let recv: Receiver<T> = entry.subscribe(list);
+                    entry.subscribe(list, subscription);
                     self.next_level.insert((key, entry));
-                    recv
                 }
             }
         }
     }
 
-    fn send(&mut self, list: &mut Vec<String>, value: T)
-    where
-        T: Clone,
-    {
+    fn get_subscribe_item(&mut self, list: &mut Vec<String>) -> Option<&mut Vec<T>> {
         if list.is_empty() {
-            self.sender.send(value);
+            Some(&mut self.inner)
         } else {
             let key: String = list.remove(0);
 
-            if let Some(entry) = self.search_mut_entry(&key) {
-                entry.send(list, value);
+            self.search_mut_entry(&key)
+                .and_then(|entry| entry.get_subscribe_item(list))
+        }
+    }
+
+    fn remove_subscription<F>(&mut self, remove_condition: &F)
+    where
+        F: Fn(&T) -> bool,
+    {
+        if let Some(position) = self.inner.iter().position(remove_condition) {
+            self.inner.remove(position);
+        }
+        if self.next_level.len() > 0 {
+            for (_, entry) in self.next_level.iter_mut() {
+                entry.remove_subscription(remove_condition);
             }
         }
     }
@@ -155,26 +167,33 @@ where
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), FmtError> {
         f.debug_struct("Entry")
             .field("next_level", &self.next_level)
-            .field("sender", &self.sender)
             .finish()
     }
 }
 
 #[test]
 fn sub_entry() {
-    use futures::executor::block_on;
     let mut entry = Entry::new();
-    let mut list = vec![String::from("hellow"), String::from("world")];
-    let recv = entry.subscribe(&mut list);
+
+    for item in 0..3 {
+        let mut list = vec![String::from("hellow"), String::from("world")];
+        entry.subscribe(&mut list, item);
+    }
 
     let mut list = vec![String::from("hellow"), String::from("world")];
-    entry.send(&mut list, 3usize);
-    entry.send(&mut vec![String::from("hellow")], 4);
+    assert_eq!(
+        entry.get_subscribe_item(&mut list),
+        Some(&mut vec![0, 1, 2])
+    );
 
-    let mut iter = block_on(recv.recv_iter());
+    let fnc: fn(&usize) -> bool = |item| {*item == 1usize};
+    entry.remove_subscription(&fnc);
 
-    assert_eq!(iter.next(), Some(3));
-    assert_eq!(iter.next(), None);
+    let mut list = vec![String::from("hellow"), String::from("world")];
+    assert_eq!(
+        entry.get_subscribe_item(&mut list),
+        Some(&mut vec![0, 2])
+    );
 }
 
 // 用前缀树做的订阅列表
@@ -194,12 +213,20 @@ where
         Self { root: Entry::new() }
     }
 
-    pub(super) fn subscribe(&mut self, sub: String) -> Receiver<T> {
-        self.root.subscribe(&mut Self::split(sub))
+    pub(super) fn subscribe(&mut self, sub: String, subscription: T) {
+        self.root.subscribe(&mut Self::split(sub), subscription);
     }
 
-    pub(super) fn send(&mut self, sub: String, value: T) {
-        self.root.send(&mut Self::split(sub), value);
+    pub(super) fn get_subscribe_item(&mut self, sub: String) -> Option<&mut Vec<T>> {
+        self.root.get_subscribe_item(&mut Self::split(sub))
+    }
+
+    pub(super) fn remove_subscription<F>(&mut self, remove_condition: F)
+    where
+        F: Fn(&T) -> bool,
+    {
+        self.root
+            .remove_subscription(&remove_condition);
     }
 
     pub(super) fn remove(&mut self, sub: String) {
@@ -220,25 +247,22 @@ fn test_trie() {
     use futures::executor::block_on;
     let mut sublist: SubList<usize> = SubList::new();
 
-    for _ in 0..100 {
-        let recv = sublist.subscribe(String::from("hello.world.fuck"));
-
-        sublist.send(String::from("hello.world.fuck"), 10);
-
-        let mut iter = block_on(recv.recv_iter());
-        assert_eq!(iter.next(), Some(10));
+    let mut sub = Vec::new();
+    for item in 0..100usize {
+        sub.push(item);
+        sublist.subscribe(String::from("hello.world.fuck"), item);
     }
 
-    for _ in 0..100 {
-        let recv = sublist.subscribe(String::from("hello.world.bitch"));
+    assert_eq!(
+        sublist.get_subscribe_item(String::from("hello.world.fuck")),
+        Some(&mut sub)
+    );
 
-        sublist.send(String::from("hello.world.bitch"), 10);
+    sublist.remove_subscription(|item| *item == 50);
+    sub.remove(50);
 
-        let mut iter = block_on(recv.recv_iter());
-        assert_eq!(iter.next(), Some(10));
-    }
-
-    assert_eq!(sublist.total(), 2);
-    sublist.remove(String::from("hello.world.fuck"));
-    sublist.remove(String::from("hello.world.bitch"));
+    assert_eq!(
+        sublist.get_subscribe_item(String::from("hello.world.fuck")),
+        Some(&mut sub)
+    );
 }

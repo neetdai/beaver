@@ -2,6 +2,8 @@ use serde_derive::Serialize;
 use serde_json::error::Result;
 use std::default::Default;
 use std::net::IpAddr;
+use bytes::{BytesMut, Bytes, BufMut};
+use std::mem::size_of;
 
 const PING: &str = "PING\r\n";
 const PONG: &str = "PONG\r\n";
@@ -159,23 +161,41 @@ impl<'a> Msg<'a> {
         }
     }
 
-    pub(super) fn format(&self) -> String {
+    pub(super) fn format(&self) -> Bytes {
         match self.reply_to {
-            Some(reply_to) => format!(
-                "MSG {} {} {} {}\r\n{}\r\n",
-                self.subject,
-                self.sid,
-                reply_to,
-                self.content.len(),
-                self.content
-            ),
-            None => format!(
-                "MSG {} {} {}\r\n{}\r\n",
-                self.subject,
-                self.sid,
-                self.content.len(),
-                self.content
-            ),
+            Some(reply_to) => {
+                let mut buff: BytesMut = BytesMut::from("MSG ");
+                buff.put(self.subject.as_bytes());
+                buff.put_u8(b' ');
+                buff.put(self.sid.as_bytes());
+                buff.put_u8(b' ');
+                buff.put(reply_to.as_bytes());
+                buff.put_u8(b' ');
+                buff.put(self.content.len().to_string().as_bytes());                
+                buff.put(&b"\r\n"[..]);
+                buff.put(self.content.as_bytes());
+                buff.put(&b"\r\n"[..]);
+                buff.freeze()
+            }
+            None => {
+                let mut buff: BytesMut = BytesMut::from("MSG ");
+                buff.put(self.subject.as_bytes());
+                buff.put_u8(b' ');
+                buff.put(self.sid.as_bytes());
+                buff.put_u8(b' ');
+                buff.put_uint(self.content.len() as u64, size_of::<usize>());
+                buff.put(&b"\r\n"[..]);
+                buff.put(self.content.as_bytes());
+                buff.put(&b"\r\n"[..]);
+                buff.freeze()
+            }
+            // None => format!(
+            //     "MSG {} {} {}\r\n{}\r\n",
+            //     self.subject,
+            //     self.sid,
+            //     self.content.len(),
+            //     self.content
+            // ),
         }
     }
 }
