@@ -1,5 +1,5 @@
 use super::decode::{Decode, Error, Message};
-use super::encode::{Info, Ping, Pong, ResponseOk, Msg};
+use super::encode::{Info, Msg, Ping, Pong, ResponseOk};
 use super::read_stream::ReadStream;
 use super::sub_list::SubList;
 use super::write_stream::WriteStream;
@@ -11,11 +11,11 @@ use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Instant;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::Mutex;
-use std::time::Instant;
 
 const BUFF_SIZE: usize = 512;
 
@@ -101,8 +101,6 @@ impl Service {
         }
 
         'main: loop {
-            // select! {
-            //     result = self.read_stream.read(&mut buffer) => {
             let result = self.read_stream.read(&mut buffer).await;
             match result {
                 Ok(size) => {
@@ -111,9 +109,11 @@ impl Service {
                     } else {
                         self.decode.set_buff(&buffer[..size]);
 
+                        let start_decode = Instant::now();
                         'decode: loop {
                             match self.decode.decode() {
                                 Ok(poll) => {
+                                    debug!("decode {:?}", Instant::now().checked_duration_since(start_decode));
                                     match poll {
                                         Poll::Ready(message) => {
                                             match message {
@@ -146,40 +146,76 @@ impl Service {
                                                     debug!("remote addr {} send sub, subject {} sid {}", self.remote_addr, subject, sid);
 
                                                     let mut sub_list = self.sub_list.lock().await;
-                                                    (*sub_list).subscribe(subject.to_string(), (self.write_stream.clone(), sid.to_string(), None));
+                                                    (*sub_list).subscribe(
+                                                        subject.to_string(),
+                                                        (
+                                                            self.write_stream.clone(),
+                                                            sid.to_string(),
+                                                            None,
+                                                        ),
+                                                    );
                                                 }
                                                 Message::Pub(subject, reply_to, content) => {
-                                                    debug!("remote addr {} pub subject {} content {}", self.remote_addr, subject, content);
+                                                    debug!(
+                                                        "remote addr {} pub subject {} content {}",
+                                                        self.remote_addr, subject, content
+                                                    );
                                                     {
-                                                        let mut sub_list = self.sub_list.lock().await;
+                                                        let start = Instant::now();
+                                                        
+                                                        let mut sub_list =
+                                                            self.sub_list.lock().await;
+                                                        debug!("sub {:?}", Instant::now().checked_duration_since(start));
 
-                                                        if let Some(list) = (*sub_list).get_subscribe_item(subject.to_string()) {
-                                                            let mut remove_index: Vec<usize> = Vec::new();
+                                                        if let Some(list) = (*sub_list)
+                                                            .get_subscribe_item(subject.to_string())
+                                                        {
+                                                            let mut remove_index: Vec<usize> =
+                                                                Vec::new();
+                                                            let msg = Msg::new(
+                                                                subject, reply_to, content,
+                                                            );
 
-                                                            for (index, (write_stream, sid, max_message)) in list.iter_mut().enumerate() {
-                                                                let msg = Msg::new(subject, sid.as_str(), reply_to, content);
-                                                                let mut stream = write_stream.lock().await;
-                                                                // debug!("msg {:?}", std::str::from_utf8(&msg.format()));
-                                                                if let Err(e) = stream.write(&msg.format()).await {
+                                                            for (
+                                                                index,
+                                                                (write_stream, sid, max_message),
+                                                            ) in list.iter_mut().enumerate()
+                                                            {
+                                                                let start_lock = Instant::now();
+                                                                let mut stream =
+                                                                    write_stream.lock().await;
+
+                                                                debug!("lock {:?}", Instant::now().checked_duration_since(start_lock));
+
+                                                                let start_write = Instant::now();
+                                                                if let Err(e) = stream
+                                                                    .write(
+                                                                        &msg.format(sid.as_str()),
+                                                                    )
+                                                                    .await
+                                                                {
                                                                     error!("{:?}", e);
                                                                 }
+                                                                debug!("write {:?}", Instant::now().checked_duration_since(start_write));
 
+                                                                // 倒序标记删除的下标
                                                                 if let Some(max) = max_message {
                                                                     if *max > 0 {
                                                                         *max -= 1;
                                                                     } else {
-                                                                        remove_index.insert(0, index);
+                                                                        remove_index
+                                                                            .insert(0, index);
                                                                     }
                                                                 }
-                                                                
                                                             }
 
-
+                                                            let start_remove = Instant::now();
+                                                            // 通过倒序删除数组相应位置
                                                             for index in remove_index {
                                                                 list.remove(index);
                                                             }
+                                                            debug!("remove {:?}", Instant::now().checked_duration_since(start_remove));
                                                         }
-
                                                     }
                                                     if let Err(e) = self.send_ok().await {
                                                         error!("{:?}", e);
@@ -187,7 +223,9 @@ impl Service {
                                                 }
                                                 Message::UnSub(sid, max_messages) => {
                                                     let mut sublist = self.sub_list.lock().await;
-                                                    sublist.remove_subscription(|(_, ssid, _)| *ssid == sid.to_string());
+                                                    sublist.remove_subscription(|(_, ssid, _)| {
+                                                        ssid.eq(&sid)
+                                                    });
                                                 }
                                                 Message::Pong => {
                                                     let mut stream = self.write_stream.lock().await;
@@ -225,8 +263,6 @@ impl Service {
                     break 'main;
                 }
             }
-            //     }
-            // }
         }
     }
 
