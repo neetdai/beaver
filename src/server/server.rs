@@ -1,6 +1,7 @@
 use super::service::Service;
 use super::sub_list::SubList;
 use crate::config::{Config, ServerConfig};
+use crate::global_static::CONFIG;
 use log::{error, info};
 use std::io::Result as IoResult;
 use std::net::{AddrParseError, SocketAddr};
@@ -8,12 +9,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{split, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::select;
 use tokio::spawn;
 use tokio::sync::Mutex;
-use crate::global_static::CONFIG;
-
-const CHANNEL_LENGTH: usize = 1024;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -22,7 +19,6 @@ pub enum Error {
 }
 
 pub struct Server {
-    config: &'static Config,
     add: SocketAddr,
 }
 
@@ -32,10 +28,12 @@ impl Server {
         let addr: SocketAddr =
             format!("{}:{}", server_config.get_ip(), server_config.get_port()).parse()?;
 
-        Ok(Self { config: &CONFIG, add: addr })
+        Ok(Self {
+            add: addr,
+        })
     }
 
-    pub async fn run(mut self) -> IoResult<()> {
+    pub async fn run(self) -> IoResult<()> {
         let mut listener = TcpListener::bind(self.add).await?;
         let mut client_id: usize = 0;
         let sub_list = Arc::new(Mutex::new(SubList::new()));
