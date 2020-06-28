@@ -2,8 +2,6 @@ use serde_derive::Serialize;
 use serde_json::error::Result;
 use std::default::Default;
 use std::net::IpAddr;
-use bytes::{BytesMut, Bytes, BufMut};
-use std::mem::size_of;
 
 const PING: &str = "PING\r\n";
 const PONG: &str = "PONG\r\n";
@@ -139,63 +137,56 @@ impl ResponseOk {
 }
 
 #[derive(Debug)]
-pub(super) struct Msg<'a> {
-    subject: &'a str,
-    sid: &'a str,
-    reply_to: Option<&'a str>,
-    content: &'a str,
+pub(super) struct Msg {
+    front_chunk: Vec<u8>,
+    after_chunk: Vec<u8>,
 }
 
-impl<'a> Msg<'a> {
-    pub(super) fn new(
-        subject: &'a str,
-        sid: &'a str,
-        reply_to: Option<&'a str>,
-        content: &'a str,
-    ) -> Self {
+impl Msg {
+    pub(super) fn new<'a>(subject: &'a str, reply_to: Option<&'a str>, content: &'a str) -> Self {
+        let content_len_str: String = content.len().to_string();
+        let mut front_chunk: Vec<u8> = Vec::with_capacity(4 + subject.as_bytes().len() + 1);
+
+        front_chunk.extend_from_slice(b"MSG ");
+        front_chunk.extend_from_slice(subject.as_bytes());
+        front_chunk.extend_from_slice(b" ");
+
+        let mut after_chunk: Vec<u8> = Vec::with_capacity(
+            {
+                match reply_to {
+                    Some(reply) => reply.as_bytes().len() + 2,
+                    None => 1,
+                }
+            } + content_len_str.as_bytes().len()
+                + b"\r\n".len() * 2
+                + content.as_bytes().len(),
+        );
+
+        after_chunk.extend_from_slice(b" ");
+        if let Some(reply) = reply_to {
+            after_chunk.extend_from_slice(reply.as_bytes());
+            after_chunk.extend_from_slice(b" ");
+        }
+        after_chunk.extend_from_slice(content_len_str.as_bytes());
+        after_chunk.extend_from_slice(b"\r\n");
+        after_chunk.extend_from_slice(content.as_bytes());
+        after_chunk.extend_from_slice(b"\r\n");
+
         Self {
-            subject,
-            sid,
-            reply_to,
-            content,
+            front_chunk,
+            after_chunk,
         }
     }
 
-    pub(super) fn format(&self) -> Bytes {
-        match self.reply_to {
-            Some(reply_to) => {
-                let mut buff: BytesMut = BytesMut::from("MSG ");
-                buff.put(self.subject.as_bytes());
-                buff.put_u8(b' ');
-                buff.put(self.sid.as_bytes());
-                buff.put_u8(b' ');
-                buff.put(reply_to.as_bytes());
-                buff.put_u8(b' ');
-                buff.put(self.content.len().to_string().as_bytes());                
-                buff.put(&b"\r\n"[..]);
-                buff.put(self.content.as_bytes());
-                buff.put(&b"\r\n"[..]);
-                buff.freeze()
-            }
-            None => {
-                let mut buff: BytesMut = BytesMut::from("MSG ");
-                buff.put(self.subject.as_bytes());
-                buff.put_u8(b' ');
-                buff.put(self.sid.as_bytes());
-                buff.put_u8(b' ');
-                buff.put_uint(self.content.len() as u64, size_of::<usize>());
-                buff.put(&b"\r\n"[..]);
-                buff.put(self.content.as_bytes());
-                buff.put(&b"\r\n"[..]);
-                buff.freeze()
-            }
-            // None => format!(
-            //     "MSG {} {} {}\r\n{}\r\n",
-            //     self.subject,
-            //     self.sid,
-            //     self.content.len(),
-            //     self.content
-            // ),
-        }
+    pub(super) fn format(&self, sid: &str) -> Vec<u8> {
+        let mut response: Vec<u8> = Vec::with_capacity(
+            self.front_chunk.len() + sid.as_bytes().len() + self.after_chunk.len(),
+        );
+
+        response.extend_from_slice(&self.front_chunk);
+        response.extend_from_slice(sid.as_bytes());
+        response.extend_from_slice(&self.after_chunk);
+
+        response
     }
 }
