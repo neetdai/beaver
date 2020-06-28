@@ -127,7 +127,6 @@ impl Decode {
                         b'S' => self.state = State::S,
                         b'U' => self.state = State::U,
                         _ => {
-                            // self.reset();
                             return Err(Error::Parse);
                         }
                     },
@@ -272,7 +271,6 @@ impl Decode {
                         }
                     },
                     _ => {
-                        // self.reset();
                         return Err(Error::Parse);
                     }
                 }
@@ -312,27 +310,19 @@ impl Decode {
 
     fn sub_message_complete(&mut self) -> Result<Poll<Message>, Error> {
         // 处理订阅
-        let result = self.sub_message();
-        // self.reset();
-        result.map(Poll::Ready)
+        self.sub_message().map(Poll::Ready)
     }
 
     fn connect_message_complete(&mut self) -> Result<Poll<Message>, Error> {
-        let result = self.connect_message();
-        // self.reset();
-        result.map(Poll::Ready)
+        self.connect_message().map(Poll::Ready)
     }
 
     fn pong_message_complete(&mut self) -> Result<Poll<Message>, Error> {
-        let result = self.pong_message();
-        // self.reset();
-        Ok(Poll::Ready(result))
+        Ok(Poll::Ready(self.pong_message()))
     }
 
     fn ping_message_complete(&mut self) -> Result<Poll<Message>, Error> {
-        let result = self.ping_message();
-        // self.reset();
-        Ok(Poll::Ready(result))
+        Ok(Poll::Ready(self.ping_message()))
     }
 
     fn pub_message(&mut self) -> Result<Poll<Message>, Error> {
@@ -376,9 +366,7 @@ impl Decode {
     }
 
     fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
-        let result = self.pub_message();
-        // self.reset();
-        result
+        self.pub_message()
     }
 
     fn unsub_message(&mut self) -> Result<Poll<Message>, Error> {
@@ -402,9 +390,7 @@ impl Decode {
     }
 
     fn unsub_complete(&mut self) -> Result<Poll<Message>, Error> {
-        let result = self.unsub_message();
-        // self.reset();
-        result
+        self.unsub_message()
     }
 }
 
