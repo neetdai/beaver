@@ -219,7 +219,6 @@ impl Service {
                                                             sublist.remove_subscription(|(_, ssid, _)| {
                                                                 ssid.eq(&sid)
                                                             });
-                                                            break 'main;
                                                         }
                                                         Message::Pong => {
                                                             if let Err(e) = self.send_ping()
