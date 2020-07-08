@@ -28,9 +28,7 @@ impl Server {
         let addr: SocketAddr =
             format!("{}:{}", server_config.get_ip(), server_config.get_port()).parse()?;
 
-        Ok(Self {
-            add: addr,
-        })
+        Ok(Self { add: addr })
     }
 
     pub async fn run(self) -> IoResult<()> {

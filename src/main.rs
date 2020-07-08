@@ -1,6 +1,4 @@
 use beaver;
-use beaver::config::Config;
-use beaver::global_static::CONFIG;
 use beaver::server::Server;
 use env_logger;
 use log::error;
