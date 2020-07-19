@@ -71,21 +71,21 @@ pub(super) enum Message<'a> {
 #[derive(Debug)]
 pub(super) struct Decode {
     state: State,
-    buff: BytesMut,
-    params: Vec<u8>,
+    buff: Vec<u8>,
+    end: usize,
 }
 
 impl Decode {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             state: State::Start,
-            buff: BytesMut::with_capacity(capacity),
-            params: Vec::new(),
+            buff: Vec::with_capacity(capacity),
+            end: 0,
         }
     }
 
     pub(super) fn set_buff(&mut self, buff: &[u8]) {
-        self.buff.put(buff);
+        self.buff.extend_from_slice(buff);
     }
 
     // 在解析的过程中,
@@ -93,158 +93,84 @@ impl Decode {
     // 而不是 \n
     pub(super) fn decode(&mut self) -> Result<Poll<Message>, Error> {
         loop {
-            if self.buff.has_remaining() {
-                match self.state {
-                    State::Start => {
-                        if self.buff.len() >= 4 {
-                            match &self.buff.get_u32().to_be_bytes() {
-                                b"CONN" => self.state = State::Conn,
-                                b"SUB " => self.state = State::SubSpace,
-                                b"PUB " => self.state = State::PubSpace,
-                                b"PING" => self.state = State::Ping,
-                                b"PONG" => self.state = State::Pong,
-                                b"UNSU" => self.state = State::UnSu,
-                                _ => return Err(Error::Parse),
+            if !self.buff.is_empty() {
+                if let Some(position) = self.buff.iter().position(|item| *item == b'\n') {
+                    self.end = position;
+                    match self.state {
+                        State::Start => {
+                            if position >= 4 {
+                                match &self.buff[..4] {
+                                    b"CONN" => self.state = State::Conn,
+                                    b"SUB " => self.state = State::SubSpace,
+                                    b"PUB " => self.state = State::PubSpace,
+                                    b"PING" => self.state = State::Ping,
+                                    b"PONG" => self.state = State::Pong,
+                                    b"UNSU" => self.state = State::UnSu,
+                                    _ => return Err(Error::Parse),
+                                }
+                            } else {
+                                return Ok(Poll::Pending);
                             }
-                        } else {
-                            return Ok(Poll::Pending);
                         }
-                    }
-                    State::Conn => {
-                        if self.buff.len() >= 3 {
-                            if &self.buff.get_u32().to_be_bytes() == b"ECT " {
+                        State::Conn => {
+                            if self.buff.len() < 8 {
+                                return Ok(Poll::Pending);
+                            }
+                            if self.end >= 8 && &self.buff[4..8] == b"ECT " {
                                 self.state = State::ConnectSpace;
                             } else {
                                 return Err(Error::Parse);
                             }
                         }
-                    }
-                    State::ConnectSpace => {
-                        let item = self.buff.get_u8();
-                        match item {
-                            b'\r' => {
-                                self.state = State::ConnectPrepare;
-                            }
-                            b'\n' => {
-                                return self.connect_message_complete();
-                            }
-                            _ => {
-                                self.params.push(item);
+                        State::ConnectSpace => {
+                            if self.buff[self.end - 1] == b'\r' {
+                                return self.connect_message_complete(8, self.end - 1);
+                            } else {
+                                return self.connect_message_complete(8, self.end);
                             }
                         }
-                    }
-                    State::ConnectPrepare => match self.buff.get_u8() {
-                        b'\n' => {
-                            return self.connect_message_complete();
-                        }
-                        _ => {
-                            self.params.extend_from_slice(b"\r\n");
-                            self.state = State::ConnectSpace;
-                        }
-                    },
-                    State::Ping => match self.buff.get_u8() {
-                        b'\r' => self.state = State::PingPrepare,
-                        b'\n' => {
-                            return self.ping_message_complete();
-                        }
-                        _ => return Err(Error::UnknownProtocol),
-                    },
-                    State::PingPrepare => {
-                        if self.buff.get_u8() == b'\n' {
-                            return self.ping_message_complete();
-                        } else {
-                            return Err(Error::UnknownProtocol);
-                        }
-                    }
-                    State::Pong => match self.buff.get_u8() {
-                        b'\n' => {
-                            return self.pong_message_complete();
-                        }
-                        b'\r' => {
-                            self.state = State::PongPrepare;
-                        }
-                        _ => {
-                            return Err(Error::UnknownProtocol);
-                        }
-                    },
-                    State::PongPrepare => {
-                        if self.buff.get_u8() == b'\n' {
-                            return self.pong_message_complete();
-                        } else {
-                            return Err(Error::UnknownProtocol);
-                        }
-                    }
-                    State::SubSpace => {
-                        let item = self.buff.get_u8();
-                        match item {
-                            b'\r' => {
-                                self.state = State::SubPrepare;
-                            }
-                            b'\n' => {
-                                return self.sub_message_complete();
-                            }
-                            _ => {
-                                self.params.push(item);
+                        State::SubSpace => {
+                            if self.buff[self.end - 1] == b'\r' {
+                                return self.sub_message_complete(4, self.end - 1);
+                            } else {
+                                return self.sub_message_complete(4, self.end);
                             }
                         }
-                    }
-                    State::SubPrepare => match self.buff.get_u8() {
-                        b'\n' => {
-                            return self.sub_message_complete();
+                        State::Ping => {
+                            return self.ping_message_complete()
                         }
-                        _ => {
-                            self.params.extend_from_slice(b"\r\n");
-                            self.state = State::SubSpace;
+                        State::Pong => {
+                            return self.pong_message_complete()
                         }
-                    },
-                    State::PubSpace => {
-                        let item = self.buff.get_u8();
-                        match item {
-                            b'\n' => {
-                                self.params.push(item);
-                                self.state = State::PubComplete;
-                            }
-                            _ => {
-                                self.params.push(item);
+                        State::PubSpace => {
+                            if let Some(position) = self.buff.iter().skip(self.end + 1).position(|item| *item == b'\n') {
+                                self.end += position + 1;
+                                return self.pub_complete(4, self.end);
+                            } else {
+                                return Ok(Poll::Pending);
                             }
                         }
-                    }
-                    State::PubComplete => {
-                        let item = self.buff.get_u8();
-                        match item {
-                            b'\n' => {
-                                self.params.push(item);
-                                return self.pub_complete();
+                        State::UnSu => {
+                            if self.buff.len() < 6 {
+                                return Ok(Poll::Pending);
                             }
-                            _ => {
-                                self.params.push(item);
-                            }
-                        }
-                    }
-                    State::UnSu => {
-                        if self.buff.len() >= 2 {
-                            if &self.buff.get_u16().to_be_bytes() == b"B " {
+                            if self.end >= 6 && &self.buff[4..6] == b"B " {
                                 self.state = State::UnSubPrepare;
                             } else {
                                 return Err(Error::Parse);
                             }
                         }
-                    }
-                    State::UnSubPrepare => {
-                        let item = self.buff.get_u8();
-                        match item {
-                            b'\n' => {
-                                self.params.push(item);
-                                return self.unsub_complete();
-                            }
-                            _ => {
-                                self.params.push(item);
+                        State::UnSubPrepare => {
+                            if self.buff[self.end - 1] == b'\r' {
+                                return self.unsub_complete(6, self.end - 1);
+                            } else {
+                                return self.unsub_complete(6, self.end);
                             }
                         }
+                        _ => return Err(Error::Parse),
                     }
-                    _ => {
-                        return Err(Error::Parse);
-                    }
+                } else {
+                    return Ok(Poll::Pending);
                 }
             } else {
                 return Ok(Poll::Pending);
@@ -252,8 +178,8 @@ impl Decode {
         }
     }
 
-    fn sub_message(&self) -> Result<Message, Error> {
-        let sub: Vec<&str> = { from_utf8(&self.params)?.split_whitespace().collect() };
+    fn sub_message(&self, start: usize, end: usize) -> Result<Message, Error> {
+        let sub: Vec<&str> = { from_utf8(&self.buff[start..end])?.split_whitespace().collect() };
         match sub[..] {
             [subject, sid] => Ok(Message::Sub(subject, None, sid)),
             [subject, group, sid] => Ok(Message::Sub(subject, Some(group), sid)),
@@ -261,8 +187,8 @@ impl Decode {
         }
     }
 
-    fn connect_message(&self) -> Result<Message, Error> {
-        from_utf8(&self.params)
+    fn connect_message(&self, start: usize, end: usize) -> Result<Message, Error> {
+        from_utf8(&self.buff[start..end])
             .map_err(Error::Utf8)
             .and_then(|result| Ok(Message::Connect(serde_json::from_str(result)?)))
     }
@@ -277,16 +203,18 @@ impl Decode {
 
     pub(super) fn reset(&mut self) {
         self.state = State::Start;
-        self.params.clear();
+        let (_, new) = self.buff.split_at(self.end + 1);
+        self.end = 0;
+        self.buff = new.to_vec();
     }
 
-    fn sub_message_complete(&mut self) -> Result<Poll<Message>, Error> {
+    fn sub_message_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
         // 处理订阅
-        self.sub_message().map(Poll::Ready)
+        self.sub_message(start, end).map(Poll::Ready)
     }
 
-    fn connect_message_complete(&mut self) -> Result<Poll<Message>, Error> {
-        self.connect_message().map(Poll::Ready)
+    fn connect_message_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
+        self.connect_message(start, end).map(Poll::Ready)
     }
 
     fn pong_message_complete(&mut self) -> Result<Poll<Message>, Error> {
@@ -297,9 +225,9 @@ impl Decode {
         Ok(Poll::Ready(self.ping_message()))
     }
 
-    fn pub_message(&mut self) -> Result<Poll<Message>, Error> {
+    fn pub_message(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
         let params: Vec<&str> = {
-            from_utf8(&self.params)
+            from_utf8(&self.buff[start..end])
                 .map_err(Error::Utf8)?
                 .trim()
                 .split("\r\n")
@@ -338,12 +266,12 @@ impl Decode {
         }
     }
 
-    fn pub_complete(&mut self) -> Result<Poll<Message>, Error> {
-        self.pub_message()
+    fn pub_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
+        self.pub_message(start, end)
     }
 
-    fn unsub_message(&mut self) -> Result<Poll<Message>, Error> {
-        from_utf8(&self.params)
+    fn unsub_message(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
+        from_utf8(&self.buff[start..end])
             .map_err(Error::Utf8)
             .and_then(|unsub_message| {
                 let result: Vec<&str> = unsub_message.trim().split_whitespace().take(2).collect();
@@ -362,8 +290,8 @@ impl Decode {
             })
     }
 
-    fn unsub_complete(&mut self) -> Result<Poll<Message>, Error> {
-        self.unsub_message()
+    fn unsub_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
+        self.unsub_message(start, end)
     }
 }
 
@@ -501,11 +429,11 @@ fn decode_connect_chunks() {
     let mut decode = Decode::new(512);
 
     // 允许分开接收数据
-    decode.set_buff(b"CONN");
+    decode.set_buff(b"CONNE");
     let result = decode.decode();
 
     assert!(result.unwrap().is_pending());
-    decode.set_buff(b"ECT {\"name\":\"#rustlang\",\"pedantic\":false,\"verbose\":true}\r\n");
+    decode.set_buff(b"CT {\"name\":\"#rustlang\",\"pedantic\":false,\"verbose\":true}\r\n");
     let result = decode.decode();
 
     if let Ok(Poll::Ready(Message::Connect(message))) = result {
