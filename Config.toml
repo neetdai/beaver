@@ -1,10 +1,10 @@
 [server]
 ip = "127.0.0.1"
-port = 4222
+port = 8090
 version = "2.1.6"
 server_id = "NAIKPM2FRYUR4JHJ7ETSJNYKIUEWUPF4IWB7UZ62FGQZJ4POUBUZ4LME"
 server_name = "NAIKPM2FRYUR4JHJ7ETSJNYKIUEWUPF4IWB7UZ62FGQZJ4POUBUZ4LME"
 auth_required = false
 ssl_required = false
-max_payload = 65535
+max_payload = 512
 proto = 1

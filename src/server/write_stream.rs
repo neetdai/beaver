@@ -3,13 +3,13 @@ use std::io::{Error as IoError, Result as IoResult};
 use std::net::SocketAddr;
 use std::ops::Drop;
 use tokio::io::AsyncWriteExt;
-use tokio::io::{BufWriter, WriteHalf};
+use tokio::io::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::spawn;
 
 #[derive(Debug)]
 pub(super) struct WriteStream {
-    stream: BufWriter<WriteHalf<TcpStream>>,
+    stream: WriteHalf<TcpStream>,
     ssl_required: bool,
 
     // 是否回复
@@ -17,7 +17,7 @@ pub(super) struct WriteStream {
 }
 
 impl WriteStream {
-    pub(super) fn new(stream: BufWriter<WriteHalf<TcpStream>>) -> Self {
+    pub(super) fn new(stream: WriteHalf<TcpStream>) -> Self {
         Self {
             stream,
             ssl_required: false,
@@ -55,9 +55,5 @@ impl WriteStream {
 
     pub(super) fn set_verbose(&mut self, verbose: bool) {
         self.verbose = verbose;
-    }
-
-    pub(super) async fn flush(&mut self) -> IoResult<()> {
-        self.stream.flush().await
     }
 }
