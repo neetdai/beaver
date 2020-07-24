@@ -186,14 +186,11 @@ fn sub_entry() {
         Some(&mut vec![0, 1, 2])
     );
 
-    let fnc: fn(&usize) -> bool = |item| {*item == 1usize};
+    let fnc: fn(&usize) -> bool = |item| *item == 1usize;
     entry.remove_subscription(&fnc);
 
     let mut list = vec![String::from("hellow"), String::from("world")];
-    assert_eq!(
-        entry.get_subscribe_item(&mut list),
-        Some(&mut vec![0, 2])
-    );
+    assert_eq!(entry.get_subscribe_item(&mut list), Some(&mut vec![0, 2]));
 }
 
 // 用前缀树做的订阅列表
@@ -225,8 +222,7 @@ where
     where
         F: Fn(&T) -> bool,
     {
-        self.root
-            .remove_subscription(&remove_condition);
+        self.root.remove_subscription(&remove_condition);
     }
 
     pub(super) fn remove(&mut self, sub: String) {

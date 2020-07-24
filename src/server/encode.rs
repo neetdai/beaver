@@ -113,8 +113,8 @@ impl Default for Info {
 pub(super) struct Ping;
 
 impl Ping {
-    pub(super) fn format() -> Vec<u8> {
-        PING.to_vec()
+    pub(super) fn format() -> &'static [u8] {
+        PING
     }
 }
 
@@ -122,8 +122,8 @@ impl Ping {
 pub(super) struct Pong;
 
 impl Pong {
-    pub(super) fn format() -> Vec<u8> {
-        PONG.to_vec()
+    pub(super) fn format() -> &'static [u8] {
+        PONG
     }
 }
 
@@ -131,8 +131,8 @@ impl Pong {
 pub(super) struct ResponseOk;
 
 impl ResponseOk {
-    pub(super) fn format() -> Vec<u8> {
-        OK.to_vec()
+    pub(super) fn format() -> &'static [u8] {
+        OK
     }
 }
 
@@ -176,6 +176,14 @@ impl Msg {
             front_chunk,
             after_chunk,
         }
+    }
+
+    pub(super) fn get_front_chunk(&self) -> &[u8] {
+        &self.front_chunk
+    }
+
+    pub(super) fn get_after_chunk(&self) -> &[u8] {
+        &self.after_chunk
     }
 
     pub(super) fn format(&self, sid: &str) -> Vec<u8> {

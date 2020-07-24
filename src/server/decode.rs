@@ -136,14 +136,15 @@ impl Decode {
                                 return self.sub_message_complete(4, self.end);
                             }
                         }
-                        State::Ping => {
-                            return self.ping_message_complete()
-                        }
-                        State::Pong => {
-                            return self.pong_message_complete()
-                        }
+                        State::Ping => return self.ping_message_complete(),
+                        State::Pong => return self.pong_message_complete(),
                         State::PubSpace => {
-                            if let Some(position) = self.buff.iter().skip(self.end + 1).position(|item| *item == b'\n') {
+                            if let Some(position) = self
+                                .buff
+                                .iter()
+                                .skip(self.end + 1)
+                                .position(|item| *item == b'\n')
+                            {
                                 self.end += position + 1;
                                 return self.pub_complete(4, self.end);
                             } else {
@@ -179,7 +180,11 @@ impl Decode {
     }
 
     fn sub_message(&self, start: usize, end: usize) -> Result<Message, Error> {
-        let sub: Vec<&str> = { from_utf8(&self.buff[start..end])?.split_whitespace().collect() };
+        let sub: Vec<&str> = {
+            from_utf8(&self.buff[start..end])?
+                .split_whitespace()
+                .collect()
+        };
         match sub[..] {
             [subject, sid] => Ok(Message::Sub(subject, None, sid)),
             [subject, group, sid] => Ok(Message::Sub(subject, Some(group), sid)),
@@ -213,7 +218,11 @@ impl Decode {
         self.sub_message(start, end).map(Poll::Ready)
     }
 
-    fn connect_message_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
+    fn connect_message_complete(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<Poll<Message>, Error> {
         self.connect_message(start, end).map(Poll::Ready)
     }
 
