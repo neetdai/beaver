@@ -7,35 +7,35 @@ use crate::config::Config;
 use crate::config::ServerConfig;
 use crate::global_static::CONFIG;
 use log::{debug, error};
-use std::cmp::Ordering;
 use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::{Duration, Instant};
-use tokio::io::{ReadHalf, WriteHalf};
+use std::time::Duration;
+// use std::time::{Duration, Instant};
+use tokio::io::{ReadHalf, WriteHalf, BufWriter};
 use tokio::net::TcpStream;
 use tokio::select;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender, error::SendError};
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
 const BUFF_SIZE: usize = 512;
 const IO_BUFF_SIZE: usize = 512;
 
+type ArcWriteStream = Arc<Mutex<WriteStream>>;
+type ArcSubList = Arc<Mutex<SubList<(ArcWriteStream, String, Option<u32>)>>>;
+
 #[derive(Debug)]
 pub(super) struct Service {
     read_stream: ReadStream,
-    write_stream: WriteStream,
+    write_stream: ArcWriteStream,
     decode: Decode,
     config: &'static Config,
     client_id: usize,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
-    sub_list: Arc<Mutex<SubList<(UnboundedSender<Vec<u8>>, String, Option<u32>)>>>,
+    sub_list: ArcSubList,
     buffer: Vec<u8>,
-    sender: UnboundedSender<Vec<u8>>,
-    receiver: UnboundedReceiver<Vec<u8>>,
     verbose: bool,
 }
 
@@ -46,13 +46,12 @@ impl Service {
         client_id: usize,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-        sub_list: Arc<Mutex<SubList<(UnboundedSender<Vec<u8>>, String, Option<u32>)>>>,
+        sub_list: ArcSubList,
     ) -> Self {
         let read_stream: ReadStream = ReadStream::new(read_stream);
-        let write_stream: WriteStream = WriteStream::new(write_stream);
+        let write_stream: ArcWriteStream = Arc::new(Mutex::new(WriteStream::new(BufWriter::new(write_stream))));
 
         let decode: Decode = Decode::new(BUFF_SIZE);
-        let (sender, receiver) = unbounded_channel();
 
         Self {
             read_stream,
@@ -64,8 +63,6 @@ impl Service {
             remote_addr,
             sub_list,
             buffer: Vec::with_capacity(IO_BUFF_SIZE),
-            sender,
-            receiver,
             verbose: false,
         }
     }
@@ -96,7 +93,7 @@ impl Service {
                 Ok(result) => {
                     debug!("local addr {} send info", self.local_addr);
 
-                    if let Err(e) = self.write_stream.write(result.as_bytes()).await {
+                    if let Err(e) = self.write_stream.lock().await.write(result.as_bytes()).await {
                         error!("{:?}", e);
                         return;
                     }
@@ -119,11 +116,11 @@ impl Service {
                             } else {
                                 self.decode.set_buff(&buffer[..size]);
 
-                                let start_decode = Instant::now();
+                                // let start_decode = Instant::now();
                                 'decode: loop {
                                     match self.decode.decode() {
                                         Ok(poll) => {
-                                            debug!("decode {:?}", Instant::now().checked_duration_since(start_decode));
+                                            // debug!("decode {:?}", Instant::now().checked_duration_since(start_decode));
                                             match poll {
                                                 Poll::Ready(message) => {
                                                     match message {
@@ -148,7 +145,7 @@ impl Service {
                                                                 self.set_verbose(verbose).await;
                                                             }
 
-                                                            if let Err(e) = self.send_ok() {
+                                                            if let Err(e) = self.send_ok().await {
                                                                 error!("{:?}", e);
                                                             }
                                                         }
@@ -159,7 +156,7 @@ impl Service {
                                                             (*sub_list).subscribe(
                                                                 subject.to_string(),
                                                                 (
-                                                                    self.sender.clone(),
+                                                                    self.write_stream.clone(),
                                                                     sid.to_string(),
                                                                     None,
                                                                 ),
@@ -171,10 +168,10 @@ impl Service {
                                                                 self.remote_addr, subject, content
                                                             );
                                                             {
-                                                                let start = Instant::now();
+                                                                // let start = Instant::now();
                                                                 let mut sub_list =
                                                                     self.sub_list.lock().await;
-                                                                debug!("sub {:?}", Instant::now().checked_duration_since(start));
+                                                                // debug!("sub {:?}", Instant::now().checked_duration_since(start));
 
                                                                 if let Some(list) = (*sub_list)
                                                                     .get_subscribe_item(subject.to_string())
@@ -187,14 +184,20 @@ impl Service {
 
                                                                     for (
                                                                         index,
-                                                                        (sender_tmp, sid, max_message),
+                                                                        (write_stream, sid, max_message),
                                                                     ) in list.iter_mut().enumerate()
                                                                     {
-                                                                        let start_write = Instant::now();
-                                                                        if let Err(e) = sender_tmp.send(msg.format(sid.as_str())) {
+                                                                        // let start_write = Instant::now();
+                                                                        if let Err(e) = write_stream.lock().await.write(msg.get_front_chunk()).await {
                                                                             error!("{:?}", e);
                                                                         }
-                                                                        debug!("send msg {:?}", Instant::now().checked_duration_since(start_write));
+                                                                        if let Err(e) = write_stream.lock().await.write(sid.as_bytes()).await {
+                                                                            error!("{:?}", e);
+                                                                        }
+                                                                        if let Err(e) = write_stream.lock().await.write(msg.get_after_chunk()).await {
+                                                                            error!("{:?}", e);
+                                                                        }
+                                                                        // debug!("send msg {:?}", Instant::now().checked_duration_since(start_write));
 
                                                                         // 倒序标记删除的下标
                                                                         if let Some(max) = max_message {
@@ -207,15 +210,15 @@ impl Service {
                                                                         }
                                                                     }
 
-                                                                    let start_remove = Instant::now();
+                                                                    // let start_remove = Instant::now();
                                                                     // 通过倒序删除数组相应位置
                                                                     for index in remove_index {
                                                                         list.remove(index);
                                                                     }
-                                                                    debug!("remove {:?}", Instant::now().checked_duration_since(start_remove));
+                                                                    // debug!("remove {:?}", Instant::now().checked_duration_since(start_remove));
                                                                 }
                                                             }
-                                                            if let Err(e) = self.send_ok() {
+                                                            if let Err(e) = self.send_ok().await {
                                                                 error!("{:?}", e);
                                                             }
                                                         }
@@ -226,12 +229,12 @@ impl Service {
                                                             });
                                                         }
                                                         Message::Pong => {
-                                                            if let Err(e) = self.send_ping() {
+                                                            if let Err(e) = self.send_ping().await {
                                                                 error!("{:?}", e);
                                                             }
                                                         }
                                                         Message::Ping => {
-                                                            if let Err(e) = self.send_pong() {
+                                                            if let Err(e) = self.send_pong().await {
                                                                 error!("{:?}", e);
                                                             }
                                                         }
@@ -243,7 +246,9 @@ impl Service {
                                                 }
                                             }
                                         }
-                                        Err(e) => {}
+                                        Err(e) => {
+                                            error!("decode error {:?}", e);
+                                        }
                                     }
                                 }
                             }
@@ -254,42 +259,9 @@ impl Service {
                         }
                     }
                 }
-                Some(buf) = self.receiver.recv() => {
-                    let mut buf: &[u8] = buf.as_slice();
-                    'write_buff: loop {
-                        let total_len: usize = self.buffer.len() + buf.len();
-                        match total_len.cmp(&IO_BUFF_SIZE) {
-                            Ordering::Greater => {
-                                let (left, right) = buf.split_at(IO_BUFF_SIZE - self.buffer.len());
-                                self.buffer.extend_from_slice(left);
-
-                                if let Err(e) = self.write_stream.write(&self.buffer).await {
-                                    error!("{:?}", e);
-                                }
-                                self.buffer.clear();
-                                buf = right;
-                            }
-                            Ordering::Equal => {
-                                self.buffer.extend_from_slice(buf);
-                                if let Err(e) = self.write_stream.write(&self.buffer).await {
-                                    error!("{:?}", e);
-                                }
-                                self.buffer.clear();
-                                break 'write_buff;
-                            }
-                            Ordering::Less => {
-                                self.buffer.extend_from_slice(buf);
-                                break 'write_buff;
-                            }
-                        }
-                    }
-                }
                 _ = inter.tick() => {
-                    if !self.buffer.is_empty() {
-                        if let Err(e) = self.write_stream.write(&self.buffer).await {
-                            error!("{:?}", e);
-                        }
-                        self.buffer.clear();
+                    if let Err(e) = self.write_stream.lock().await.flush().await {
+                        error!("flush error {:?}", e);
                     }
                 }
             }
@@ -298,25 +270,25 @@ impl Service {
 
     async fn set_ssl(&mut self, ssl_required: bool) {
         self.read_stream.set_ssl(ssl_required);
-        self.write_stream.set_ssl(ssl_required);
+        self.write_stream.lock().await.set_ssl(ssl_required);
     }
 
     async fn set_verbose(&mut self, verbose: bool) {
-        self.write_stream.set_verbose(verbose);
+        self.write_stream.lock().await.set_verbose(verbose);
     }
 
-    fn send_ok(&mut self) -> Result<(), SendError<Vec<u8>>> {
+    async fn send_ok(&mut self) -> IoResult<()> {
         if self.verbose {
-            self.sender.send(ResponseOk::format())?;
+            self.write_stream.lock().await.write(ResponseOk::format()).await?;
         }
         Ok(())
     }
 
-    fn send_ping(&mut self) -> Result<(), SendError<Vec<u8>>> {
-        self.sender.send(Ping::format())
+    async fn send_ping(&mut self) -> IoResult<()> {
+        self.write_stream.lock().await.write(Ping::format()).await
     }
 
-    fn send_pong(&mut self) -> Result<(), SendError<Vec<u8>>> {
-        self.sender.send(Pong::format())
+    async fn send_pong(&mut self) -> IoResult<()> {
+        self.write_stream.lock().await.write(Pong::format()).await
     }
 }
