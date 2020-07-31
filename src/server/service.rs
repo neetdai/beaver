@@ -11,6 +11,8 @@ use std::io::Result as IoResult;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::task::Poll;
+use std::collections::BTreeSet;
+use std::io::ErrorKind;
 use std::time::Duration;
 // use std::time::{Duration, Instant};
 use tokio::io::{ReadHalf, WriteHalf, BufWriter};
@@ -19,8 +21,8 @@ use tokio::select;
 use tokio::sync::Mutex;
 use tokio::time::interval;
 
-const BUFF_SIZE: usize = 512;
-const IO_BUFF_SIZE: usize = 512;
+const BUFF_SIZE: usize = 2048;
+const IO_BUFF_SIZE: usize = 2048;
 
 type ArcWriteStream = Arc<Mutex<WriteStream>>;
 type ArcSubList = Arc<Mutex<SubList<(ArcWriteStream, String, Option<u32>)>>>;
@@ -176,8 +178,8 @@ impl Service {
                                                                 if let Some(list) = (*sub_list)
                                                                     .get_subscribe_item(subject.to_string())
                                                                 {
-                                                                    let mut remove_index: Vec<usize> =
-                                                                        Vec::new();
+                                                                    let mut remove_index: BTreeSet<usize> =
+                                                                    BTreeSet::new();
                                                                     let msg = Msg::new(
                                                                         subject, reply_to, content,
                                                                     );
@@ -189,12 +191,21 @@ impl Service {
                                                                     {
                                                                         // let start_write = Instant::now();
                                                                         if let Err(e) = write_stream.lock().await.write(msg.get_front_chunk()).await {
+                                                                            if let ErrorKind::BrokenPipe = e.kind() {
+                                                                                remove_index.insert(index);
+                                                                            }
                                                                             error!("{:?}", e);
                                                                         }
                                                                         if let Err(e) = write_stream.lock().await.write(sid.as_bytes()).await {
+                                                                            if let ErrorKind::BrokenPipe = e.kind() {
+                                                                                remove_index.insert(index);
+                                                                            }
                                                                             error!("{:?}", e);
                                                                         }
                                                                         if let Err(e) = write_stream.lock().await.write(msg.get_after_chunk()).await {
+                                                                            if let ErrorKind::BrokenPipe = e.kind() {
+                                                                                remove_index.insert(index);
+                                                                            }
                                                                             error!("{:?}", e);
                                                                         }
                                                                         // debug!("send msg {:?}", Instant::now().checked_duration_since(start_write));
@@ -205,14 +216,14 @@ impl Service {
                                                                                 *max -= 1;
                                                                             } else {
                                                                                 remove_index
-                                                                                    .insert(0, index);
+                                                                                    .insert(index);
                                                                             }
                                                                         }
                                                                     }
 
                                                                     // let start_remove = Instant::now();
                                                                     // 通过倒序删除数组相应位置
-                                                                    for index in remove_index {
+                                                                    for index in remove_index.into_iter().rev() {
                                                                         list.remove(index);
                                                                     }
                                                                     // debug!("remove {:?}", Instant::now().checked_duration_since(start_remove));
