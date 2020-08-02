@@ -22,7 +22,6 @@ use tokio::sync::Mutex;
 use tokio::time::interval;
 
 const BUFF_SIZE: usize = 2048;
-const IO_BUFF_SIZE: usize = 2048;
 
 type ArcWriteStream = Arc<Mutex<WriteStream>>;
 type ArcSubList = Arc<Mutex<SubList<(ArcWriteStream, String, Option<u32>)>>>;
@@ -37,7 +36,6 @@ pub(super) struct Service {
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     sub_list: ArcSubList,
-    buffer: Vec<u8>,
     verbose: bool,
 }
 
@@ -53,7 +51,10 @@ impl Service {
         let read_stream: ReadStream = ReadStream::new(read_stream);
         let write_stream: ArcWriteStream = Arc::new(Mutex::new(WriteStream::new(BufWriter::new(write_stream))));
 
-        let decode: Decode = Decode::new(BUFF_SIZE);
+        let decode: Decode = {
+            let server: &ServerConfig = CONFIG.get_server();
+            Decode::new(server.get_io_buffer_size())
+        };
 
         Self {
             read_stream,
@@ -64,7 +65,6 @@ impl Service {
             local_addr,
             remote_addr,
             sub_list,
-            buffer: Vec::with_capacity(IO_BUFF_SIZE),
             verbose: false,
         }
     }
@@ -74,7 +74,10 @@ impl Service {
             "remote addr {} ==========> local addr {}",
             self.remote_addr, self.local_addr
         );
-        let mut buffer: [u8; BUFF_SIZE] = [0; BUFF_SIZE];
+        let mut buffer: Vec<u8> = {
+            let server: &ServerConfig = self.config.get_server();
+            vec![0; server.get_io_buffer_size()]
+        };
 
         {
             let server: &ServerConfig = self.config.get_server();

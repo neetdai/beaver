@@ -27,6 +27,7 @@ pub struct ServerConfig {
     write_timeout: Option<u64>,
     connect_timeout: Option<u64>,
     proto: usize,
+    io_buffer_size: usize,
 }
 
 impl ServerConfig {
@@ -64,6 +65,10 @@ impl ServerConfig {
 
     pub fn get_proto(&self) -> usize {
         self.proto
+    }
+
+    pub fn get_io_buffer_size(&self) -> usize {
+        self.io_buffer_size
     }
 }
 
