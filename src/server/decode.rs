@@ -71,7 +71,7 @@ pub(super) enum Message<'a> {
 #[derive(Debug)]
 pub(super) struct Decode {
     state: State,
-    buff: Vec<u8>,
+    buff: BytesMut,
     end: usize,
 }
 
@@ -79,7 +79,7 @@ impl Decode {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             state: State::Start,
-            buff: Vec::with_capacity(capacity),
+            buff: BytesMut::with_capacity(capacity),
             end: 0,
         }
     }
@@ -93,9 +93,9 @@ impl Decode {
     // 而不是 \n
     pub(super) fn decode(&mut self) -> Result<Poll<Message>, Error> {
         loop {
-            if !self.buff.is_empty() {
-                if let Some(position) = self.buff.iter().position(|item| *item == b'\n') {
-                    self.end = position;
+            if self.buff.has_remaining() {
+                if let Some(position) = self.buff[self.end..].iter().position(|item| *item == b'\n') {
+                    self.end += position;
                     match self.state {
                         State::Start => {
                             if position >= 4 {
@@ -114,6 +114,7 @@ impl Decode {
                         }
                         State::Conn => {
                             if self.buff.len() < 8 {
+                                self.end = self.buff.len();
                                 return Ok(Poll::Pending);
                             }
                             if self.end >= 8 && &self.buff[4..8] == b"ECT " {
@@ -140,9 +141,8 @@ impl Decode {
                         State::Pong => return self.pong_message_complete(),
                         State::PubSpace => {
                             if let Some(position) = self
-                                .buff
+                                .buff[(self.end + 1) ..]
                                 .iter()
-                                .skip(self.end + 1)
                                 .position(|item| *item == b'\n')
                             {
                                 self.end += position + 1;
@@ -153,6 +153,7 @@ impl Decode {
                         }
                         State::UnSu => {
                             if self.buff.len() < 6 {
+                                self.end = self.buff.len();
                                 return Ok(Poll::Pending);
                             }
                             if self.end >= 6 && &self.buff[4..6] == b"B " {
@@ -208,9 +209,8 @@ impl Decode {
 
     pub(super) fn reset(&mut self) {
         self.state = State::Start;
-        let (_, new) = self.buff.split_at(self.end + 1);
+        self.buff.split_to(self.end + 1);
         self.end = 0;
-        self.buff = new.to_vec();
     }
 
     fn sub_message_complete(&mut self, start: usize, end: usize) -> Result<Poll<Message>, Error> {
