@@ -8,3 +8,5 @@ auth_required = false
 ssl_required = false
 max_payload = 65535
 proto = 1
+
+io_buffer_size = 2048

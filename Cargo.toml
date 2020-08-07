@@ -20,7 +20,5 @@ uuid = {version = "0.8.1", features = ["v4"]}
 thiserror = "1.0.13"
 lazy_static = "1.4.0"
 
-[dev-dependencies]
-nats = "0.3.3"
-
-
+[profile.release]
+opt-level = 3
