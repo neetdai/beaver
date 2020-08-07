@@ -68,6 +68,26 @@ pub(super) enum Message<'a> {
     Ping,
 }
 
+// 解析nats协议
+// 参考文档: https://www.cnblogs.com/vimisky/p/4931015.html
+// 这里我想做一个解析, 我想了有两种方法:
+// 一种是无状态的解析:
+// 优点在于不需要操作内存去记录当前的状态, 对频繁调用的性能提升会很好
+// 缺点在于解析PUB这种不友好, 因为 PUB <subject> [reply-to] <#bytes>\r\n[payload]\r\n 首先需要找到第一个\r, 然后再继续判断下去
+// 当字节流没有一次性送完两个\r的情况下, 要不停的重复判断第一个\r, 扫描做无用工
+// 
+// 一种是有状态的解析:
+// 优点和缺点刚好和无状态相反
+// 
+// 那么我这里是选择了有状态的写法. 那么要性能比较高的话, 尽量少分配内存.
+// 本着少分配内存的原则, 所以我干脆也不创建一个新的变量作为返回, 直接给出引用
+//
+// 目前解析PUB长度为10000的字节流性能为:
+// time:   [14.538 us 14.591 us 14.652 us]                        
+// change: [+1.3137% +1.9753% +2.6860%] (p = 0.00 < 0.05)
+// Performance has regressed.
+// 
+// 但是短字节流的性能比不上原版的nats
 #[derive(Debug)]
 pub(super) struct Decode {
     state: State,
@@ -84,6 +104,8 @@ impl Decode {
         }
     }
 
+    // 其实这里是没有考虑到接收的字节流是否会大于usize的大小, 
+    // 或者说没有考虑到整个服务是否能撑住
     pub(super) fn set_buff(&mut self, buff: &[u8]) {
         self.buff.extend_from_slice(buff);
     }
@@ -207,6 +229,8 @@ impl Decode {
         Message::Ping
     }
 
+    // 这里不能在decode的范围里面使用, 因为其中需要切割buff, 但是decode是返回引用buff的值, 所以应该是编译不过的.
+    // 需要使用完decode返回值才调用reset
     pub(super) fn reset(&mut self) {
         self.state = State::Start;
         self.buff.split_to(self.end + 1);
