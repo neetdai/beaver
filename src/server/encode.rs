@@ -185,16 +185,4 @@ impl Msg {
     pub(super) fn get_after_chunk(&self) -> &[u8] {
         &self.after_chunk
     }
-
-    pub(super) fn format(&self, sid: &str) -> Vec<u8> {
-        let mut response: Vec<u8> = Vec::with_capacity(
-            self.front_chunk.len() + sid.as_bytes().len() + self.after_chunk.len(),
-        );
-
-        response.extend_from_slice(&self.front_chunk);
-        response.extend_from_slice(sid.as_bytes());
-        response.extend_from_slice(&self.after_chunk);
-
-        response
-    }
 }

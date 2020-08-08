@@ -116,12 +116,21 @@ impl Service {
                 result = self.read_stream.read(&mut buffer) => {
                     match result {
                         Ok(size) => {
+                            // 如果读取字节流的时候获取到0长度字节流,
+                            // 基本上说明是客户端正常关闭tcp了,
+                            // 所以可以中断整个操作流程
                             if size == 0 {
                                 break 'main;
                             } else {
                                 self.decode.set_buff(&buffer[..size]);
 
-                                // let start_decode = Instant::now();
+                                // 这里不停循环解析字节流是因为获取到的字节流有可能是
+                                // b"PING" 或 b"PING\r\nPONG\r\n"
+                                // 这样的字节流, 前者收不到一个完整的数据, 后者收到了多个数据
+                                // 所以需要保存未完整的数据, 要对多段数据进行解析
+                                // 至于说decode.decode 返回的poll, 其实是我懒得去新增一个枚举值, 
+                                // 我对于poll::ready的理解是已经完成了某件事情
+                                // poll::pending是还未完成, 要继续等待
                                 'decode: loop {
                                     match self.decode.decode() {
                                         Ok(poll) => {
@@ -192,7 +201,8 @@ impl Service {
                                                                         (write_stream, sid, max_message),
                                                                     ) in list.iter_mut().enumerate()
                                                                     {
-                                                                        // let start_write = Instant::now();
+                                                                        // 由于发布的协议除了sid是不同以外, 其他的都是一样
+                                                                        // 所以要预先拼好sid前后的值, 重复利用
                                                                         if let Err(e) = write_stream.lock().await.write(msg.get_front_chunk()).await {
                                                                             if let ErrorKind::BrokenPipe = e.kind() {
                                                                                 remove_index.insert(index);

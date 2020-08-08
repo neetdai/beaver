@@ -1,5 +1,9 @@
 用rust重写nats的基本服务, 仅供学习rust.
 
+感谢 [nkbai](https://github.com/nkbai)
+
+参考文档: https://www.cnblogs.com/vimisky/p/4931015.html
+
 ### 性能测试
 
 硬件配置:
@@ -8,9 +12,7 @@
     Kernel: x86_64 Linux 4.15.0-112-generic
     CPU: Intel Core i5-6400 @ 4x 3.3GHz [27.8°C]
     RAM: 5058MiB / 7889MiB
-
-命令:
-    
+ 
 
 测试命令:
     
