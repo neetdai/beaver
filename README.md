@@ -1,6 +1,9 @@
 用rust重写nats的基本服务, 仅供学习rust.
 
-感谢 [nkbai](https://github.com/nkbai)
+感谢:
+[nkbai](https://github.com/nkbai)
+[huangjj27](https://github.com/huangjj27)
+[wayslog](https://github.com/wayslog)
 
 参考文档: https://www.cnblogs.com/vimisky/p/4931015.html
 
